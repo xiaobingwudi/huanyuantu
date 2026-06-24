@@ -59,15 +59,13 @@ def load_cases_database():
         elif response.status_code == 404:
             return {"cases": []}
         else:
-            st.error(f"读取GitHub失败: {response.status_code} - {response.text}")
             return {"cases": []}
     except Exception as e:
-        st.error(f"连接GitHub失败: {e}")
         return {"cases": []}
 
 def save_cases_database(db):
     if not GITHUB_TOKEN:
-        st.error("GitHub配置缺失，请在secrets中设置GITHUB_TOKEN")
+        st.error("GitHub配置缺失")
         return False
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
@@ -87,41 +85,49 @@ def save_cases_database(db):
     if response.status_code == 200:
         payload["sha"] = response.json()["sha"]
     elif response.status_code != 404:
-        st.error(f"检查文件状态失败: {response.status_code}")
         return False
     
-    try:
-        response = requests.put(url, headers=get_github_headers(), json=payload)
-        if response.status_code in [200, 201]:
-            return True
-        else:
-            st.error(f"保存失败: {response.status_code} - {response.text}")
-            return False
-    except Exception as e:
-        st.error(f"连接GitHub失败: {e}")
-        return False
+    response = requests.put(url, headers=get_github_headers(), json=payload)
+    return response.status_code in [200, 201]
 
-@st.cache_data(show_spinner=False)
 def load_parquet_from_github():
     if not GITHUB_TOKEN:
+        st.error("缺少 GITHUB_TOKEN")
         return None
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{PARQUET_PATH}"
     params = {"ref": GITHUB_BRANCH}
     
+    st.info(f"请求URL: {url}")
+    
     try:
         response = requests.get(url, headers=get_github_headers(), params=params)
+        st.write(f"状态码: {response.status_code}")
         
         if response.status_code == 200:
             data = response.json()
+            file_size = data.get("size", 0)
+            st.write(f"文件大小: {file_size / (1024*1024):.1f} MB")
+            
             file_content = base64.b64decode(data["content"])
+            st.write(f"解码后大小: {len(file_content) / (1024*1024):.1f} MB")
+            
             df = pd.read_parquet(io.BytesIO(file_content))
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
             return df
+        elif response.status_code == 401:
+            st.error("Token 无效或没有权限访问私有仓库")
+            return None
+        elif response.status_code == 404:
+            st.error(f"文件不存在: {PARQUET_PATH}")
+            return None
         else:
+            st.error(f"错误: {response.status_code}")
+            st.write(response.text[:500])
             return None
     except Exception as e:
+        st.error(f"异常: {e}")
         return None
 
 def load_html_annotations(file_content, filename):
@@ -310,7 +316,7 @@ col_left, col_right = st.columns(2)
 with col_left:
     if not st.session_state.data_file_loaded:
         if st.button("从GitHub加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
-            with st.spinner("正在从GitHub加载数据（文件较大，可能需要1-2分钟）..."):
+            with st.spinner("正在从GitHub加载数据..."):
                 df_5m = load_parquet_from_github()
                 if df_5m is not None:
                     st.session_state.df_5m = df_5m
@@ -318,8 +324,7 @@ with col_left:
                     st.success(f"数据加载成功！共 {len(df_5m):,} 根K线")
                     st.rerun()
                 else:
-                    st.error(f"无法加载，请检查：1) token权限 2) 仓库名是否正确 3) 文件路径: {PARQUET_PATH}")
-                    st.info(f"当前仓库: {GITHUB_REPO}")
+                    st.error("加载失败，请查看上方调试信息")
     else:
         st.success(f"数据已加载 ({len(st.session_state.df_5m):,} 根K线)")
 
