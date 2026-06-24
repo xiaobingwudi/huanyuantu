@@ -59,7 +59,7 @@ def load_cases_database():
         elif response.status_code == 404:
             return {"cases": []}
         else:
-            st.error(f"读取GitHub失败: {response.status_code}")
+            st.error(f"读取GitHub失败: {response.status_code} - {response.text}")
             return {"cases": []}
     except Exception as e:
         st.error(f"连接GitHub失败: {e}")
@@ -86,10 +86,17 @@ def save_cases_database(db):
     
     if response.status_code == 200:
         payload["sha"] = response.json()["sha"]
+    elif response.status_code != 404:
+        st.error(f"检查文件状态失败: {response.status_code}")
+        return False
     
     try:
         response = requests.put(url, headers=get_github_headers(), json=payload)
-        return response.status_code in [200, 201]
+        if response.status_code in [200, 201]:
+            return True
+        else:
+            st.error(f"保存失败: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
         st.error(f"连接GitHub失败: {e}")
         return False
@@ -104,6 +111,7 @@ def load_parquet_from_github():
     
     try:
         response = requests.get(url, headers=get_github_headers(), params=params)
+        
         if response.status_code == 200:
             data = response.json()
             file_content = base64.b64decode(data["content"])
@@ -302,7 +310,7 @@ col_left, col_right = st.columns(2)
 with col_left:
     if not st.session_state.data_file_loaded:
         if st.button("从GitHub加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
-            with st.spinner("正在从GitHub加载数据..."):
+            with st.spinner("正在从GitHub加载数据（文件较大，可能需要1-2分钟）..."):
                 df_5m = load_parquet_from_github()
                 if df_5m is not None:
                     st.session_state.df_5m = df_5m
@@ -310,7 +318,8 @@ with col_left:
                     st.success(f"数据加载成功！共 {len(df_5m):,} 根K线")
                     st.rerun()
                 else:
-                    st.error(f"无法加载 {PARQUET_PATH}")
+                    st.error(f"无法加载，请检查：1) token权限 2) 仓库名是否正确 3) 文件路径: {PARQUET_PATH}")
+                    st.info(f"当前仓库: {GITHUB_REPO}")
     else:
         st.success(f"数据已加载 ({len(st.session_state.df_5m):,} 根K线)")
 
