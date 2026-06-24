@@ -40,7 +40,7 @@ if 'html_filename' not in st.session_state:
 def get_github_headers():
     return {
         "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
+        "Accept": "application/vnd.github.v3.raw"
     }
 
 def load_cases_database():
@@ -48,10 +48,14 @@ def load_cases_database():
         return {"cases": []}
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
     params = {"ref": GITHUB_BRANCH}
     
     try:
-        response = requests.get(url, headers=get_github_headers(), params=params)
+        response = requests.get(url, headers=headers, params=params)
         if response.status_code == 200:
             data = response.json()
             content = base64.b64decode(data["content"]).decode("utf-8")
@@ -69,12 +73,16 @@ def save_cases_database(db):
         return False
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
     content = json.dumps(db, ensure_ascii=False, indent=2)
     content_bytes = content.encode("utf-8")
     content_base64 = base64.b64encode(content_bytes).decode("utf-8")
     
     params = {"ref": GITHUB_BRANCH}
-    response = requests.get(url, headers=get_github_headers(), params=params)
+    response = requests.get(url, headers=headers, params=params)
     
     payload = {
         "message": f"Update cases database ({len(db.get('cases', []))} cases)",
@@ -87,47 +95,29 @@ def save_cases_database(db):
     elif response.status_code != 404:
         return False
     
-    response = requests.put(url, headers=get_github_headers(), json=payload)
+    response = requests.put(url, headers=headers, json=payload)
     return response.status_code in [200, 201]
 
+@st.cache_data(show_spinner=False)
 def load_parquet_from_github():
     if not GITHUB_TOKEN:
-        st.error("缺少 GITHUB_TOKEN")
         return None
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{PARQUET_PATH}"
     params = {"ref": GITHUB_BRANCH}
     
-    st.info(f"请求URL: {url}")
-    
     try:
         response = requests.get(url, headers=get_github_headers(), params=params)
-        st.write(f"状态码: {response.status_code}")
         
         if response.status_code == 200:
-            data = response.json()
-            file_size = data.get("size", 0)
-            st.write(f"文件大小: {file_size / (1024*1024):.1f} MB")
-            
-            file_content = base64.b64decode(data["content"])
-            st.write(f"解码后大小: {len(file_content) / (1024*1024):.1f} MB")
-            
+            file_content = response.content
             df = pd.read_parquet(io.BytesIO(file_content))
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
             return df
-        elif response.status_code == 401:
-            st.error("Token 无效或没有权限访问私有仓库")
-            return None
-        elif response.status_code == 404:
-            st.error(f"文件不存在: {PARQUET_PATH}")
-            return None
         else:
-            st.error(f"错误: {response.status_code}")
-            st.write(response.text[:500])
             return None
     except Exception as e:
-        st.error(f"异常: {e}")
         return None
 
 def load_html_annotations(file_content, filename):
@@ -316,7 +306,7 @@ col_left, col_right = st.columns(2)
 with col_left:
     if not st.session_state.data_file_loaded:
         if st.button("从GitHub加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
-            with st.spinner("正在从GitHub加载数据..."):
+            with st.spinner("正在从GitHub加载18MB数据文件..."):
                 df_5m = load_parquet_from_github()
                 if df_5m is not None:
                     st.session_state.df_5m = df_5m
@@ -324,7 +314,7 @@ with col_left:
                     st.success(f"数据加载成功！共 {len(df_5m):,} 根K线")
                     st.rerun()
                 else:
-                    st.error("加载失败，请查看上方调试信息")
+                    st.error(f"加载失败，请检查文件路径: {PARQUET_PATH}")
     else:
         st.success(f"数据已加载 ({len(st.session_state.df_5m):,} 根K线)")
 
