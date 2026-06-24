@@ -15,9 +15,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_5M = os.path.join(BASE_DIR, "ES_CONTINUOUS_5M.parquet")
 
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
-GITHUB_REPO = st.secrets.get("GITHUB_REPO", "")
-GITHUB_PATH = st.secrets.get("GITHUB_PATH", "cases_database.json")
-GITHUB_BRANCH = st.secrets.get("GITHUB_BRANCH", "main")
+GITHUB_REPO_OWNER = st.secrets.get("DATA_REPO_OWNER", "xiaobingwudi")
+GITHUB_REPO_NAME = st.secrets.get("DATA_REPO_NAME", "private-data")
+GITHUB_PATH = st.secrets.get("DATA_FILE_PATH", "cases_database.json")
+GITHUB_BRANCH = st.secrets.get("DATA_REPO_BRANCH", "main")
+GITHUB_REPO = f"{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
 
 if 'html_annotations' not in st.session_state:
     st.session_state.html_annotations = {}
@@ -43,7 +45,7 @@ def get_github_headers():
     }
 
 def load_cases_database():
-    if not GITHUB_TOKEN or not GITHUB_REPO:
+    if not GITHUB_TOKEN:
         return {"cases": []}
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
@@ -66,8 +68,8 @@ def load_cases_database():
         return {"cases": []}
 
 def save_cases_database(db):
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        st.error("GitHub配置缺失，请在secrets中设置GITHUB_TOKEN和GITHUB_REPO")
+    if not GITHUB_TOKEN:
+        st.error("GitHub配置缺失，请在secrets中设置GITHUB_TOKEN")
         return False
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
@@ -353,17 +355,8 @@ def delete_case_from_database(case_id):
     save_cases_database(db)
     return True
 
-config_error_msg = (
-    "GitHub配置缺失！"
-    "请在Streamlit Cloud的Settings > Secrets中设置："
-    "GITHUB_TOKEN = \"ghp_xxxxxxxxxxxx\""
-    "GITHUB_REPO = \"你的用户名/仓库名\""
-    "GITHUB_PATH = \"cases_database.json\""
-    "GITHUB_BRANCH = \"main\""
-)
-
-if not GITHUB_TOKEN or not GITHUB_REPO:
-    st.error(config_error_msg)
+if not GITHUB_TOKEN:
+    st.warning("请在Streamlit Secrets中设置 GITHUB_TOKEN")
 
 st.title("Al Brooks 案例构建器")
 
@@ -400,12 +393,12 @@ with col_right:
                 if annotations:
                     st.session_state.html_annotations = annotations
                     st.session_state.html_filename = html_file.name
-                    st.success(f"成功加载 {len(annotations)} 条K线说明! (文件: {html_file.name})")
+                    st.success(f"成功加载 {len(annotations)} 条K线说明!")
                     st.rerun()
                 else:
-                    st.error("未能解析到注释，请检查HTML文件")
+                    st.error("未能解析到注释")
     else:
-        st.success(f"说明已加载 ({len(st.session_state.html_annotations)} 条) - {st.session_state.html_filename}")
+        st.success(f"说明已加载 ({len(st.session_state.html_annotations)} 条)")
 
 st.divider()
 
@@ -506,8 +499,6 @@ if st.session_state.data_file_loaded:
             if preview_data:
                 st.dataframe(pd.DataFrame(preview_data), use_container_width=True, height=200)
                 st.info(f"{len(preview_data)} 条注释将被保存")
-            else:
-                st.warning("当前偏移量下没有注释落在有效范围内")
         
         st.divider()
         
@@ -534,8 +525,8 @@ if st.session_state.data_file_loaded:
                 btn_label = f"保存案例 ({case_id})"
             
             if st.button(btn_label, use_container_width=True, type="primary"):
-                if not GITHUB_TOKEN or not GITHUB_REPO:
-                    st.error("请先配置GitHub Secrets")
+                if not GITHUB_TOKEN:
+                    st.error("请先配置 GITHUB_TOKEN")
                 else:
                     try:
                         saved_bars, saved_comments, updated = save_case_to_database(
@@ -550,18 +541,11 @@ if st.session_state.data_file_loaded:
                         )
                         
                         st.balloons()
-                        
-                        if updated:
-                            st.success(f"案例更新成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
-                        else:
-                            st.success(f"案例保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
-                        
+                        st.success(f"保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
                         st.info(f"已同步到GitHub: {GITHUB_REPO}/{GITHUB_PATH}")
                     
                     except Exception as e:
                         st.error(f"保存失败: {e}")
-                        import traceback
-                        st.error(traceback.format_exc())
 
 st.divider()
 st.header("案例管理")
@@ -570,9 +554,7 @@ with st.expander("查看和管理所有案例", expanded=True):
     db = load_cases_database()
     cases = db.get("cases", [])
     st.write(f"总案例数: {len(cases)}")
-    
-    if GITHUB_REPO:
-        st.caption(f"数据源: GitHub - {GITHUB_REPO}/{GITHUB_PATH}")
+    st.caption(f"数据源: {GITHUB_REPO}/{GITHUB_PATH}")
     
     if cases:
         for i, c in enumerate(cases):
