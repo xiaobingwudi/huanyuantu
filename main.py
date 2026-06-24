@@ -67,7 +67,7 @@ def load_cases_database():
 
 def save_cases_database(db):
     if not GITHUB_TOKEN or not GITHUB_REPO:
-        st.error("GitHub配置缺失，请在secrets.toml中设置GITHUB_TOKEN和GITHUB_REPO")
+        st.error("GitHub配置缺失，请在secrets中设置GITHUB_TOKEN和GITHUB_REPO")
         return False
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
@@ -96,7 +96,6 @@ def save_cases_database(db):
             return True
         else:
             st.error(f"保存到GitHub失败: {response.status_code}")
-            st.error(response.json())
             return False
     except Exception as e:
         st.error(f"连接GitHub失败: {e}")
@@ -128,7 +127,6 @@ def load_html_annotations(html_path):
         
         if notes_match:
             notes_text = notes_match.group(1)
-            
             lines = re.split(r'<br\s*/?>', notes_text, flags=re.IGNORECASE)
             
             for line in lines:
@@ -181,7 +179,7 @@ def plot_kline(bars, annotations, first_bar_offset=0, title="K线图"):
             desc = annotations[original_num]
             if len(desc) > 60:
                 desc = desc[:60] + "..."
-            base_text += f"<br><br>📝 原图#{original_num}: {desc}"
+            base_text += f"<br><br>原图#{original_num}: {desc}"
         
         hover_texts.append(base_text)
 
@@ -233,7 +231,7 @@ def plot_kline(bars, annotations, first_bar_offset=0, title="K线图"):
         
         original_num = i + 1 - first_bar_offset
         if original_num in annotations:
-            text = f"<b>{k_num}</b>⭐"
+            text = f"<b>{k_num}</b>*"
         else:
             text = f"<b>{k_num}</b>"
         
@@ -355,8 +353,249 @@ def delete_case_from_database(case_id):
     save_cases_database(db)
     return True
 
+config_error_msg = (
+    "GitHub配置缺失！"
+    "请在Streamlit Cloud的Settings > Secrets中设置："
+    "GITHUB_TOKEN = \"ghp_xxxxxxxxxxxx\""
+    "GITHUB_REPO = \"你的用户名/仓库名\""
+    "GITHUB_PATH = \"cases_database.json\""
+    "GITHUB_BRANCH = \"main\""
+)
+
 if not GITHUB_TOKEN or not GITHUB_REPO:
-    st.error("""
-    GitHub配置缺失！
+    st.error(config_error_msg)
+
+st.title("Al Brooks 案例构建器")
+
+st.header("步骤1：加载数据")
+
+col_left, col_right = st.columns(2)
+
+with col_left:
+    if not st.session_state.data_file_loaded:
+        if st.button("加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
+            with st.spinner("正在加载数据..."):
+                df_5m = load_5m_data()
+                if df_5m is not None:
+                    st.session_state.df_5m = df_5m
+                    st.session_state.data_file_loaded = True
+                    st.success(f"数据加载成功！共 {len(df_5m):,} 根K线")
+                    st.rerun()
+                else:
+                    st.error("未找到 ES_CONTINUOUS_5M.parquet 文件")
+    else:
+        st.success(f"数据已加载 ({len(st.session_state.df_5m):,} 根K线)")
+
+with col_right:
+    if not st.session_state.html_annotations:
+        html_file = st.file_uploader("上传HTML说明文件 (.html)", type=['html'])
+        
+        if html_file is not None:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
+                tmp_file.write(html_file.getvalue())
+                html_tmp_path = tmp_file.name
+            
+            if st.button("加载说明", use_container_width=True):
+                annotations = load_html_annotations(html_tmp_path)
+                if annotations:
+                    st.session_state.html_annotations = annotations
+                    st.session_state.html_filename = html_file.name
+                    st.success(f"成功加载 {len(annotations)} 条K线说明! (文件: {html_file.name})")
+                    st.rerun()
+                else:
+                    st.error("未能解析到注释，请检查HTML文件")
+    else:
+        st.success(f"说明已加载 ({len(st.session_state.html_annotations)} 条) - {st.session_state.html_filename}")
+
+st.divider()
+
+if st.session_state.data_file_loaded:
+    st.header("步骤2：选择日期和时间")
     
-    请在Streamlit Cloud的Settings > Secrets中设置：
+    df = st.session_state.df_5m
+    min_date, max_date = get_date_range_from_db(df)
+    st.info(f"数据库范围: {min_date} 至 {max_date}")
+    
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        builder_date = st.text_input("日期 (YYYY-MM-DD)", value="2012-12-05")
+    
+    with col2:
+        col2a, col2b = st.columns(2)
+        with col2a:
+            builder_start = st.text_input("开始 (HH:MM)", value="13:00")
+        with col2b:
+            builder_end = st.text_input("结束 (HH:MM)", value="20:10")
+    
+    with col3:
+        st.write("")
+        st.write("")
+        load_data = st.button("查找数据", use_container_width=True, type="primary")
+    
+    if load_data:
+        try:
+            start_dt = pd.to_datetime(f"{builder_date} {builder_start}")
+            end_dt = pd.to_datetime(f"{builder_date} {builder_end}")
+            
+            mask = (df.index >= start_dt) & (df.index <= end_dt)
+            builder_df = df[mask].copy()
+            
+            if len(builder_df) > 0:
+                st.session_state.builder_df = builder_df
+                st.session_state.builder_date = builder_date
+                st.session_state.builder_start = builder_start
+                st.session_state.builder_end = builder_end
+                st.success(f"找到 {len(builder_df)} 根K线")
+            else:
+                st.error("未找到数据")
+        except Exception as e:
+            st.error(f"查找失败: {e}")
+    
+    if 'builder_df' in st.session_state and st.session_state.builder_df is not None:
+        st.divider()
+        
+        st.header("步骤3：校正K线编号")
+        
+        st.warning("前6根保存为盘前背景(编号-6到-1)，第1根开始为正式K线。")
+        
+        col_a, col_b, col_c = st.columns([2, 1, 2])
+        
+        with col_a:
+            first_bar_number = st.number_input(
+                "原图第1根K线 = 显示窗口的第几根？",
+                min_value=1,
+                max_value=len(st.session_state.builder_df),
+                value=7,
+                step=1
+            )
+        
+        with col_b:
+            st.write("")
+            st.write("")
+            pre_count = min(6, first_bar_number - 1)
+            main_count = min(80, len(st.session_state.builder_df) - first_bar_number + 1)
+            st.metric("盘前", pre_count)
+            st.metric("正式", main_count)
+        
+        with col_c:
+            if first_bar_number > 1:
+                pre_start = max(1, first_bar_number - 6)
+                st.info(f"保存: #{pre_start}~#{first_bar_number-1} (盘前) + #{first_bar_number}起 (正式)")
+        
+        st.divider()
+        
+        st.header("步骤4：预览并保存")
+        
+        fig = plot_kline(
+            st.session_state.builder_df,
+            st.session_state.html_annotations,
+            first_bar_offset=first_bar_number - 1,
+            title=f"预览 - {st.session_state.builder_date}"
+        )
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        
+        if st.session_state.html_annotations:
+            st.subheader("注释映射预览")
+            preview_data = []
+            for original_num, desc in sorted(st.session_state.html_annotations.items()):
+                if 1 <= original_num <= main_count:
+                    preview_data.append({"原图编号": original_num, "bars编号": original_num, "说明": desc[:60]})
+            
+            if preview_data:
+                st.dataframe(pd.DataFrame(preview_data), use_container_width=True, height=200)
+                st.info(f"{len(preview_data)} 条注释将被保存")
+            else:
+                st.warning("当前偏移量下没有注释落在有效范围内")
+        
+        st.divider()
+        
+        col_save1, col_save2 = st.columns([2, 1])
+        
+        with col_save1:
+            case_title = st.text_input("案例标题", value=f"{st.session_state.builder_date}")
+        
+        with col_save2:
+            st.write("")
+            st.write("")
+            
+            if st.session_state.html_filename:
+                case_id = get_case_id_from_filename(st.session_state.html_filename)
+            else:
+                case_id = f"case_{st.session_state.builder_date}"
+            
+            db = load_cases_database()
+            existing = any(c.get("case_id") == case_id for c in db.get("cases", []))
+            
+            if existing:
+                btn_label = f"更新案例 ({case_id})"
+            else:
+                btn_label = f"保存案例 ({case_id})"
+            
+            if st.button(btn_label, use_container_width=True, type="primary"):
+                if not GITHUB_TOKEN or not GITHUB_REPO:
+                    st.error("请先配置GitHub Secrets")
+                else:
+                    try:
+                        saved_bars, saved_comments, updated = save_case_to_database(
+                            case_id=case_id,
+                            title=case_title,
+                            date=st.session_state.builder_date,
+                            start_time=st.session_state.builder_start,
+                            end_time=st.session_state.builder_end,
+                            df_selected=st.session_state.builder_df,
+                            annotations=st.session_state.html_annotations,
+                            first_bar_number=first_bar_number
+                        )
+                        
+                        st.balloons()
+                        
+                        if updated:
+                            st.success(f"案例更新成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
+                        else:
+                            st.success(f"案例保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
+                        
+                        st.info(f"已同步到GitHub: {GITHUB_REPO}/{GITHUB_PATH}")
+                    
+                    except Exception as e:
+                        st.error(f"保存失败: {e}")
+                        import traceback
+                        st.error(traceback.format_exc())
+
+st.divider()
+st.header("案例管理")
+
+with st.expander("查看和管理所有案例", expanded=True):
+    db = load_cases_database()
+    cases = db.get("cases", [])
+    st.write(f"总案例数: {len(cases)}")
+    
+    if GITHUB_REPO:
+        st.caption(f"数据源: GitHub - {GITHUB_REPO}/{GITHUB_PATH}")
+    
+    if cases:
+        for i, c in enumerate(cases):
+            cid = c.get("case_id", f"case_{i}")
+            date = c.get("date", "未知")
+            title = c.get("title", "")
+            pre = c.get("pre_bars", 0)
+            main = c.get("main_bars", 0)
+            comments_count = len(c.get("comments", {}))
+            
+            col_info, col_btn1, col_btn2 = st.columns([5, 1, 1])
+            
+            with col_info:
+                st.write(f"**{cid}** | {date} | {title} | 盘前:{pre} 正式:{main} 注释:{comments_count}")
+            
+            with col_btn1:
+                with st.expander("详情"):
+                    st.json(c.get("comments", {}))
+            
+            with col_btn2:
+                if st.button("删除", key=f"delete_{cid}", use_container_width=True):
+                    delete_case_from_database(cid)
+                    st.success(f"已删除案例: {cid}")
+                    st.rerun()
+    else:
+        st.info("暂无案例")
