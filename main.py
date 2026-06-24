@@ -8,17 +8,16 @@ import tempfile
 import json
 import requests
 import base64
+import io
 
 st.set_page_config(page_title="Al Brooks 案例构建器", layout="wide")
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_5M = os.path.join(BASE_DIR, "ES_CONTINUOUS_5M.parquet")
 
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
 GITHUB_REPO_OWNER = st.secrets.get("DATA_REPO_OWNER", "xiaobingwudi")
 GITHUB_REPO_NAME = st.secrets.get("DATA_REPO_NAME", "private-data")
 GITHUB_PATH = st.secrets.get("DATA_FILE_PATH", "cases_database.json")
 GITHUB_BRANCH = st.secrets.get("DATA_REPO_BRANCH", "main")
+PARQUET_PATH = st.secrets.get("PARQUET_PATH", "ES_CONTINUOUS_5M.parquet")
 GITHUB_REPO = f"{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
 
 if 'html_annotations' not in st.session_state:
@@ -53,7 +52,6 @@ def load_cases_database():
     
     try:
         response = requests.get(url, headers=get_github_headers(), params=params)
-        
         if response.status_code == 200:
             data = response.json()
             content = base64.b64decode(data["content"]).decode("utf-8")
@@ -73,7 +71,6 @@ def save_cases_database(db):
         return False
     
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
-    
     content = json.dumps(db, ensure_ascii=False, indent=2)
     content_bytes = content.encode("utf-8")
     content_base64 = base64.b64encode(content_bytes).decode("utf-8")
@@ -88,41 +85,40 @@ def save_cases_database(db):
     }
     
     if response.status_code == 200:
-        data = response.json()
-        payload["sha"] = data["sha"]
+        payload["sha"] = response.json()["sha"]
     
     try:
         response = requests.put(url, headers=get_github_headers(), json=payload)
-        
-        if response.status_code in [200, 201]:
-            return True
-        else:
-            st.error(f"保存到GitHub失败: {response.status_code}")
-            return False
+        return response.status_code in [200, 201]
     except Exception as e:
         st.error(f"连接GitHub失败: {e}")
         return False
 
-def load_5m_data():
-    if os.path.exists(CACHE_5M):
-        try:
-            df = pd.read_parquet(CACHE_5M)
+@st.cache_data(show_spinner=False)
+def load_parquet_from_github():
+    if not GITHUB_TOKEN:
+        return None
+    
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{PARQUET_PATH}"
+    params = {"ref": GITHUB_BRANCH}
+    
+    try:
+        response = requests.get(url, headers=get_github_headers(), params=params)
+        if response.status_code == 200:
+            data = response.json()
+            file_content = base64.b64decode(data["content"])
+            df = pd.read_parquet(io.BytesIO(file_content))
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
             return df
-        except Exception as e:
-            st.error(f"加载数据失败: {e}")
+        else:
             return None
-    return None
+    except Exception as e:
+        return None
 
-def load_html_annotations(html_path):
-    if not html_path or not os.path.exists(html_path):
-        return {}
-
+def load_html_annotations(file_content, filename):
     try:
-        with open(html_path, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-
+        html_content = file_content.decode("utf-8")
         annotations = {}
         
         notes_match = re.search(r'<span id="note">(.*?)</span>', html_content, re.DOTALL)
@@ -135,7 +131,6 @@ def load_html_annotations(html_path):
                 line = line.strip()
                 if not line:
                     continue
-                
                 match = re.match(r'^(\d+)\s+(.+)', line)
                 if match:
                     bar_num = int(match.group(1))
@@ -143,35 +138,28 @@ def load_html_annotations(html_path):
                     desc = re.sub(r'\s+', ' ', desc)
                     annotations[bar_num] = desc
         
-        return annotations
+        return annotations, filename
     except Exception as e:
         st.error(f"解析HTML失败: {e}")
-        return {}
+        return {}, filename
 
 def plot_kline(bars, annotations, first_bar_offset=0, title="K线图"):
     if bars is None or len(bars) == 0:
         return None
 
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.05,
-        row_heights=[0.7, 0.3]
-    )
-
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     x_values = list(range(1, len(bars) + 1))
 
     hover_texts = []
     for i in range(len(bars)):
         row = bars.iloc[i]
         time_str = bars.index[i].strftime('%Y-%m-%d %H:%M')
-        k_num = i + 1
         o, h, l, c, v = row['open'], row['high'], row['low'], row['close'], row['volume']
         change = c - o
         change_pct = (change / o * 100) if o != 0 else 0
         
         base_text = (
-            f"K线 #{k_num}<br>{time_str}<br>"
+            f"K线 #{i+1}<br>{time_str}<br>"
             f"开: {o:.2f} | 高: {h:.2f}<br>低: {l:.2f} | 收: {c:.2f}<br>"
             f"涨跌: {change:+.2f} ({change_pct:+.2f}%)<br>量: {v:,.0f}"
         )
@@ -182,88 +170,42 @@ def plot_kline(bars, annotations, first_bar_offset=0, title="K线图"):
             if len(desc) > 60:
                 desc = desc[:60] + "..."
             base_text += f"<br><br>原图#{original_num}: {desc}"
-        
         hover_texts.append(base_text)
 
-    fig.add_trace(
-        go.Candlestick(
-            x=x_values,
-            open=bars['open'],
-            high=bars['high'],
-            low=bars['low'],
-            close=bars['close'],
-            name='',
-            increasing=dict(line=dict(color='red', width=1.5), fillcolor='red'),
-            decreasing=dict(line=dict(color='black', width=1.5), fillcolor='black'),
-            text=hover_texts,
-            hoverinfo='text',
-            showlegend=False
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Candlestick(
+        x=x_values, open=bars['open'], high=bars['high'], low=bars['low'], close=bars['close'],
+        name='', increasing=dict(line=dict(color='red', width=1.5), fillcolor='red'),
+        decreasing=dict(line=dict(color='black', width=1.5), fillcolor='black'),
+        text=hover_texts, hoverinfo='text', showlegend=False
+    ), row=1, col=1)
 
     colors = ['red' if bars['close'].iloc[i] >= bars['open'].iloc[i] else 'black' for i in range(len(bars))]
-
-    fig.add_trace(
-        go.Bar(
-            x=x_values,
-            y=bars['volume'],
-            name='',
-            marker_color=colors,
-            opacity=0.4,
-            showlegend=False,
-            hovertemplate='量: %{y:,.0f}<extra></extra>'
-        ),
-        row=2, col=1
-    )
+    fig.add_trace(go.Bar(x=x_values, y=bars['volume'], name='', marker_color=colors,
+                         opacity=0.4, showlegend=False, hovertemplate='量: %{y:,.0f}<extra></extra>'), row=2, col=1)
 
     annotations_on_chart = []
-    
     for i in range(len(bars)):
         row = bars.iloc[i]
-        k_num = i + 1
         is_green = row['close'] >= row['open']
-        
-        if is_green:
-            y_pos = row['high'] * 1.002
-            color = 'red'
-        else:
-            y_pos = row['low'] * 0.998
-            color = 'black'
-        
+        y_pos = row['high'] * 1.002 if is_green else row['low'] * 0.998
+        color = 'red' if is_green else 'black'
         original_num = i + 1 - first_bar_offset
-        if original_num in annotations:
-            text = f"<b>{k_num}</b>*"
-        else:
-            text = f"<b>{k_num}</b>"
-        
+        text = f"<b>{i+1}</b>*" if original_num in annotations else f"<b>{i+1}</b>"
         annotations_on_chart.append(dict(
-            x=x_values[i],
-            y=y_pos,
-            text=text,
-            showarrow=False,
-            font=dict(size=10, color=color),
-            xanchor='center',
+            x=x_values[i], y=y_pos, text=text, showarrow=False,
+            font=dict(size=10, color=color), xanchor='center',
             yanchor='bottom' if is_green else 'top'
         ))
 
-    fig.update_layout(
-        title=title,
-        height=600,
-        hovermode='x unified',
-        showlegend=False,
-        template='plotly_white',
-        margin=dict(l=50, r=30, t=50, b=30),
-        annotations=annotations_on_chart
-    )
-
+    fig.update_layout(title=title, height=600, hovermode='x unified', showlegend=False,
+                      template='plotly_white', margin=dict(l=50, r=30, t=50, b=30),
+                      annotations=annotations_on_chart)
     fig.update_xaxes(range=[0.5, len(bars) + 0.5], showgrid=True, gridcolor='#f0f0f0',
                      tickmode='linear', tick0=1, dtick=1, row=1, col=1)
     fig.update_xaxes(range=[0.5, len(bars) + 0.5], showgrid=True, gridcolor='#f0f0f0',
                      tickmode='linear', tick0=1, dtick=1, row=2, col=1)
     fig.update_yaxes(title_text="", showgrid=True, gridcolor='#f0f0f0', row=1, col=1)
     fig.update_yaxes(title_text="", showgrid=False, row=2, col=1)
-
     return fig
 
 def get_date_range_from_db(df):
@@ -273,8 +215,7 @@ def get_date_range_from_db(df):
 
 def get_case_id_from_filename(filename):
     name = os.path.splitext(filename)[0]
-    name = re.sub(r'[^\w\-_]', '_', name)
-    return name
+    return re.sub(r'[^\w\-_]', '_', name)
 
 def save_case_to_database(case_id, title, date, start_time, end_time, df_selected, annotations, first_bar_number):
     start_idx = first_bar_number - 1
@@ -324,16 +265,11 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_selecte
             }
     
     case_record = {
-        "case_id": case_id,
-        "title": title,
-        "date": date,
-        "start": start_time,
-        "end": end_time,
-        "pre_bars": pre_count,
-        "main_bars": actual_main,
+        "case_id": case_id, "title": title, "date": date,
+        "start": start_time, "end": end_time,
+        "pre_bars": pre_count, "main_bars": actual_main,
         "first_bar_offset": first_bar_number - 1,
-        "bars": bars_data,
-        "comments": comments_data
+        "bars": bars_data, "comments": comments_data
     }
     
     db = load_cases_database()
@@ -346,7 +282,6 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_selecte
     
     db["cases"].append(case_record)
     save_cases_database(db)
-    
     return len(bars_data), len(comments_data), False
 
 def delete_case_from_database(case_id):
@@ -366,39 +301,39 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     if not st.session_state.data_file_loaded:
-        if st.button("加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
-            with st.spinner("正在加载数据..."):
-                df_5m = load_5m_data()
+        if st.button("从GitHub加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
+            with st.spinner("正在从GitHub加载数据..."):
+                df_5m = load_parquet_from_github()
                 if df_5m is not None:
                     st.session_state.df_5m = df_5m
                     st.session_state.data_file_loaded = True
                     st.success(f"数据加载成功！共 {len(df_5m):,} 根K线")
                     st.rerun()
                 else:
-                    st.error("未找到 ES_CONTINUOUS_5M.parquet 文件")
+                    st.error(f"无法加载 {PARQUET_PATH}")
     else:
         st.success(f"数据已加载 ({len(st.session_state.df_5m):,} 根K线)")
 
 with col_right:
-    if not st.session_state.html_annotations:
-        html_file = st.file_uploader("上传HTML说明文件 (.html)", type=['html'])
-        
-        if html_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
-                tmp_file.write(html_file.getvalue())
-                html_tmp_path = tmp_file.name
-            
-            if st.button("加载说明", use_container_width=True):
-                annotations = load_html_annotations(html_tmp_path)
-                if annotations:
-                    st.session_state.html_annotations = annotations
-                    st.session_state.html_filename = html_file.name
-                    st.success(f"成功加载 {len(annotations)} 条K线说明!")
-                    st.rerun()
-                else:
-                    st.error("未能解析到注释")
-    else:
-        st.success(f"说明已加载 ({len(st.session_state.html_annotations)} 条)")
+    html_file = st.file_uploader("上传HTML说明文件 (.html)", type=['html'], key="html_uploader")
+    
+    if html_file is not None:
+        if st.button("加载说明", use_container_width=True):
+            annotations, fname = load_html_annotations(html_file.getvalue(), html_file.name)
+            if annotations:
+                st.session_state.html_annotations = annotations
+                st.session_state.html_filename = fname
+                st.success(f"成功加载 {len(annotations)} 条K线说明!")
+                st.rerun()
+            else:
+                st.error("未能解析到注释")
+    
+    if st.session_state.html_annotations:
+        st.success(f"已加载: {st.session_state.html_filename} ({len(st.session_state.html_annotations)} 条)")
+        if st.button("清除注释", use_container_width=True):
+            st.session_state.html_annotations = {}
+            st.session_state.html_filename = None
+            st.rerun()
 
 st.divider()
 
@@ -413,14 +348,12 @@ if st.session_state.data_file_loaded:
     
     with col1:
         builder_date = st.text_input("日期 (YYYY-MM-DD)", value="2012-12-05")
-    
     with col2:
         col2a, col2b = st.columns(2)
         with col2a:
             builder_start = st.text_input("开始 (HH:MM)", value="13:00")
         with col2b:
             builder_end = st.text_input("结束 (HH:MM)", value="20:10")
-    
     with col3:
         st.write("")
         st.write("")
@@ -430,7 +363,6 @@ if st.session_state.data_file_loaded:
         try:
             start_dt = pd.to_datetime(f"{builder_date} {builder_start}")
             end_dt = pd.to_datetime(f"{builder_date} {builder_end}")
-            
             mask = (df.index >= start_dt) & (df.index <= end_dt)
             builder_df = df[mask].copy()
             
@@ -447,22 +379,15 @@ if st.session_state.data_file_loaded:
     
     if 'builder_df' in st.session_state and st.session_state.builder_df is not None:
         st.divider()
-        
         st.header("步骤3：校正K线编号")
-        
         st.warning("前6根保存为盘前背景(编号-6到-1)，第1根开始为正式K线。")
         
         col_a, col_b, col_c = st.columns([2, 1, 2])
-        
         with col_a:
             first_bar_number = st.number_input(
                 "原图第1根K线 = 显示窗口的第几根？",
-                min_value=1,
-                max_value=len(st.session_state.builder_df),
-                value=7,
-                step=1
+                min_value=1, max_value=len(st.session_state.builder_df), value=7, step=1
             )
-        
         with col_b:
             st.write("")
             st.write("")
@@ -470,22 +395,17 @@ if st.session_state.data_file_loaded:
             main_count = min(80, len(st.session_state.builder_df) - first_bar_number + 1)
             st.metric("盘前", pre_count)
             st.metric("正式", main_count)
-        
         with col_c:
             if first_bar_number > 1:
                 pre_start = max(1, first_bar_number - 6)
                 st.info(f"保存: #{pre_start}~#{first_bar_number-1} (盘前) + #{first_bar_number}起 (正式)")
         
         st.divider()
-        
         st.header("步骤4：预览并保存")
         
-        fig = plot_kline(
-            st.session_state.builder_df,
-            st.session_state.html_annotations,
-            first_bar_offset=first_bar_number - 1,
-            title=f"预览 - {st.session_state.builder_date}"
-        )
+        fig = plot_kline(st.session_state.builder_df, st.session_state.html_annotations,
+                         first_bar_offset=first_bar_number - 1,
+                         title=f"预览 - {st.session_state.builder_date}")
         if fig:
             st.plotly_chart(fig, use_container_width=True)
         
@@ -495,34 +415,21 @@ if st.session_state.data_file_loaded:
             for original_num, desc in sorted(st.session_state.html_annotations.items()):
                 if 1 <= original_num <= main_count:
                     preview_data.append({"原图编号": original_num, "bars编号": original_num, "说明": desc[:60]})
-            
             if preview_data:
                 st.dataframe(pd.DataFrame(preview_data), use_container_width=True, height=200)
                 st.info(f"{len(preview_data)} 条注释将被保存")
         
         st.divider()
-        
         col_save1, col_save2 = st.columns([2, 1])
-        
         with col_save1:
             case_title = st.text_input("案例标题", value=f"{st.session_state.builder_date}")
-        
         with col_save2:
             st.write("")
             st.write("")
-            
-            if st.session_state.html_filename:
-                case_id = get_case_id_from_filename(st.session_state.html_filename)
-            else:
-                case_id = f"case_{st.session_state.builder_date}"
-            
+            case_id = get_case_id_from_filename(st.session_state.html_filename) if st.session_state.html_filename else f"case_{st.session_state.builder_date}"
             db = load_cases_database()
             existing = any(c.get("case_id") == case_id for c in db.get("cases", []))
-            
-            if existing:
-                btn_label = f"更新案例 ({case_id})"
-            else:
-                btn_label = f"保存案例 ({case_id})"
+            btn_label = f"更新案例 ({case_id})" if existing else f"保存案例 ({case_id})"
             
             if st.button(btn_label, use_container_width=True, type="primary"):
                 if not GITHUB_TOKEN:
@@ -530,8 +437,7 @@ if st.session_state.data_file_loaded:
                 else:
                     try:
                         saved_bars, saved_comments, updated = save_case_to_database(
-                            case_id=case_id,
-                            title=case_title,
+                            case_id=case_id, title=case_title,
                             date=st.session_state.builder_date,
                             start_time=st.session_state.builder_start,
                             end_time=st.session_state.builder_end,
@@ -539,11 +445,8 @@ if st.session_state.data_file_loaded:
                             annotations=st.session_state.html_annotations,
                             first_bar_number=first_bar_number
                         )
-                        
                         st.balloons()
                         st.success(f"保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
-                        st.info(f"已同步到GitHub: {GITHUB_REPO}/{GITHUB_PATH}")
-                    
                     except Exception as e:
                         st.error(f"保存失败: {e}")
 
@@ -566,14 +469,11 @@ with st.expander("查看和管理所有案例", expanded=True):
             comments_count = len(c.get("comments", {}))
             
             col_info, col_btn1, col_btn2 = st.columns([5, 1, 1])
-            
             with col_info:
                 st.write(f"**{cid}** | {date} | {title} | 盘前:{pre} 正式:{main} 注释:{comments_count}")
-            
             with col_btn1:
                 with st.expander("详情"):
                     st.json(c.get("comments", {}))
-            
             with col_btn2:
                 if st.button("删除", key=f"delete_{cid}", use_container_width=True):
                     delete_case_from_database(cid)
