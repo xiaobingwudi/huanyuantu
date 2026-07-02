@@ -296,17 +296,39 @@ def delete_case_from_database(case_id):
     save_cases_database(db)
     return True
 
-def find_image_for_case(case_id, images_dir="images"):
-    """在images目录中查找与case_id匹配的jpg文件"""
-    if not os.path.exists(images_dir):
+def find_image_for_html(filename, images_dir="images"):
+    """根据HTML文件名查找对应的jpg图片"""
+    if not filename or not os.path.exists(images_dir):
         return None
     
-    # 先精确匹配
+    # 从HTML文件名提取基础名称（不含扩展名）
+    base_name = os.path.splitext(filename)[0]
+    
+    # 精确匹配：查找 base_name.jpg
+    exact_path = os.path.join(images_dir, f"{base_name}.jpg")
+    if os.path.exists(exact_path):
+        return exact_path
+    
+    # 模糊匹配：查找包含基础名称的jpg文件
+    jpg_files = glob.glob(os.path.join(images_dir, "*.jpg"))
+    for jpg_file in jpg_files:
+        jpg_basename = os.path.basename(jpg_file)
+        if base_name in jpg_basename:
+            return jpg_file
+    
+    return None
+
+def find_image_for_case(case_id, images_dir="images"):
+    """根据案例ID查找对应的jpg图片"""
+    if not case_id or not os.path.exists(images_dir):
+        return None
+    
+    # 精确匹配
     exact_path = os.path.join(images_dir, f"{case_id}.jpg")
     if os.path.exists(exact_path):
         return exact_path
     
-    # 模糊匹配：查找包含case_id的jpg文件
+    # 模糊匹配
     jpg_files = glob.glob(os.path.join(images_dir, "*.jpg"))
     for jpg_file in jpg_files:
         filename = os.path.basename(jpg_file)
@@ -324,7 +346,6 @@ def plot_kline_from_case(case_data):
     if not bars:
         return None
     
-    # 将bars数据转为DataFrame便于绘图
     df_bars = pd.DataFrame(bars)
     
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
@@ -403,15 +424,59 @@ if not GITHUB_TOKEN:
 
 st.title("Al Brooks 案例构建器")
 
-# ==================== 新增：案例关联图显示 ====================
-st.header("📊 案例关联图")
-st.info("选择一个已保存的案例，右侧将显示对应的K线图和images文件夹中的对照图片")
+# ==================== 对照图显示区域（上传HTML后自动显示对应的jpg） ====================
+if st.session_state.html_filename:
+    st.header("📊 HTML文件与对照图")
+    
+    col_chart, col_image = st.columns([3, 2])
+    
+    with col_image:
+        st.subheader(f"🖼️ 对照图片")
+        
+        # 根据HTML文件名查找对应的jpg图片
+        image_path = find_image_for_html(st.session_state.html_filename)
+        
+        if image_path and os.path.exists(image_path):
+            st.image(image_path, caption=f"对照图: {os.path.basename(image_path)}", use_container_width=True)
+            st.success(f"✅ 已找到对照图片: {os.path.basename(image_path)}")
+        else:
+            st.warning(f"❌ 未找到对照图片")
+            
+            # 显示期望的文件名
+            expected_jpg = os.path.splitext(st.session_state.html_filename)[0] + ".jpg"
+            st.info(f"期望的图片文件: images/{expected_jpg}")
+            
+            # 显示images文件夹中现有的jpg文件供参考
+            if os.path.exists("images"):
+                jpg_files = glob.glob(os.path.join("images", "*.jpg"))
+                if jpg_files:
+                    with st.expander("images文件夹中现有的jpg文件"):
+                        for f in jpg_files:
+                            st.text(f"  - {os.path.basename(f)}")
+                else:
+                    st.text("images文件夹中没有jpg文件")
+            else:
+                st.text("images文件夹不存在，请创建并添加对照图片")
+    
+    with col_chart:
+        st.subheader(f"📋 HTML注释信息")
+        st.success(f"已加载: {st.session_state.html_filename}")
+        st.metric("注释数量", len(st.session_state.html_annotations))
+        
+        if st.session_state.html_annotations:
+            with st.expander("查看所有注释"):
+                for bar_num, desc in sorted(st.session_state.html_annotations.items()):
+                    st.text(f"K线 #{bar_num}: {desc}")
+    
+    st.divider()
+
+# ==================== 案例关联图显示 ====================
+st.header("📊 已保存案例关联图")
 
 db = load_cases_database()
 cases = db.get("cases", [])
 
 if cases:
-    # 创建案例选择器
     case_options = {f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}": c for c in cases}
     selected_case_label = st.selectbox(
         "选择案例查看关联图",
@@ -431,7 +496,6 @@ if cases:
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # 显示注释列表
                 comments = selected_case.get("comments", {})
                 if comments:
                     with st.expander("查看所有注释"):
@@ -444,7 +508,6 @@ if cases:
         with col_image:
             st.subheader(f"🖼️ 对照图片")
             
-            # 在images文件夹中查找对应的jpg文件
             image_path = find_image_for_case(case_id)
             
             if image_path and os.path.exists(image_path):
@@ -453,18 +516,6 @@ if cases:
             else:
                 st.warning(f"❌ 未找到对照图片")
                 st.info(f"请在 images 文件夹中添加名为 '{case_id}.jpg' 的图片文件")
-                
-                # 显示images文件夹中现有的jpg文件供参考
-                if os.path.exists("images"):
-                    jpg_files = glob.glob(os.path.join("images", "*.jpg"))
-                    if jpg_files:
-                        st.text("images文件夹中现有的jpg文件:")
-                        for f in jpg_files:
-                            st.text(f"  - {os.path.basename(f)}")
-                    else:
-                        st.text("images文件夹中没有jpg文件")
-                else:
-                    st.text("images文件夹不存在，请创建并添加对照图片")
 else:
     st.info("暂无案例数据，请先创建案例")
 
