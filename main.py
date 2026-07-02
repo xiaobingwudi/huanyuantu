@@ -23,8 +23,6 @@ PARQUET_PATH = st.secrets.get("PARQUET_PATH", "ES_CONTINUOUS_5M.parquet")
 GITHUB_REPO = f"{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
 
 # 从PARQUET_PATH推断images目录路径
-# 如果PARQUET_PATH是 "ES_CONTINUOUS_5M.parquet"，则images在同一目录
-# 如果PARQUET_PATH是 "data/ES_CONTINUOUS_5M.parquet"，则images在 data/images/
 PARQUET_DIR = os.path.dirname(PARQUET_PATH)
 if PARQUET_DIR:
     IMAGES_PATH = f"{PARQUET_DIR}/images"
@@ -47,8 +45,6 @@ if 'builder_end' not in st.session_state:
     st.session_state.builder_end = None
 if 'html_filename' not in st.session_state:
     st.session_state.html_filename = None
-if 'current_image' not in st.session_state:
-    st.session_state.current_image = None
 
 def get_github_headers():
     return {
@@ -138,7 +134,6 @@ def load_image_from_github(image_name):
     if not GITHUB_TOKEN:
         return None
     
-    # 构建图片的GitHub路径
     image_path = f"{IMAGES_PATH}/{image_name}"
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{image_path}"
     params = {"ref": GITHUB_BRANCH}
@@ -158,11 +153,9 @@ def find_image_for_html(filename):
     if not filename:
         return None
     
-    # 从HTML文件名提取基础名称（不含扩展名）
     base_name = os.path.splitext(filename)[0]
     image_name = f"{base_name}.jpg"
     
-    # 从GitHub加载图片
     image_data = load_image_from_github(image_name)
     return image_data
 
@@ -436,91 +429,6 @@ if not GITHUB_TOKEN:
 
 st.title("Al Brooks 案例构建器")
 
-# ==================== 对照图显示区域（上传HTML后自动显示对应的jpg） ====================
-if st.session_state.html_filename:
-    st.header("📊 HTML文件与对照图")
-    
-    col_chart, col_image = st.columns([3, 2])
-    
-    with col_image:
-        st.subheader(f"🖼️ 对照图片")
-        
-        # 根据HTML文件名从GitHub加载对应的jpg图片
-        image_data = find_image_for_html(st.session_state.html_filename)
-        
-        if image_data:
-            st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
-            st.success(f"✅ 已从GitHub加载对照图片")
-        else:
-            expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
-            st.warning(f"❌ 未找到对照图片")
-            st.info(f"期望的图片路径: {IMAGES_PATH}/{expected_image}")
-            st.info(f"请在GitHub仓库的 {IMAGES_PATH}/ 目录中上传 {expected_image}")
-    
-    with col_chart:
-        st.subheader(f"📋 HTML注释信息")
-        st.success(f"已加载: {st.session_state.html_filename}")
-        st.metric("注释数量", len(st.session_state.html_annotations))
-        
-        if st.session_state.html_annotations:
-            with st.expander("查看所有注释"):
-                for bar_num, desc in sorted(st.session_state.html_annotations.items()):
-                    st.text(f"K线 #{bar_num}: {desc}")
-    
-    st.divider()
-
-# ==================== 案例关联图显示 ====================
-st.header("📊 已保存案例关联图")
-
-db = load_cases_database()
-cases = db.get("cases", [])
-
-if cases:
-    case_options = {f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}": c for c in cases}
-    selected_case_label = st.selectbox(
-        "选择案例查看关联图",
-        options=list(case_options.keys()),
-        key="case_viewer_select"
-    )
-    
-    if selected_case_label:
-        selected_case = case_options[selected_case_label]
-        case_id = selected_case.get("case_id", "")
-        
-        col_chart, col_image = st.columns([3, 2])
-        
-        with col_chart:
-            st.subheader(f"📈 K线图 - {selected_case.get('title', case_id)}")
-            fig = plot_kline_from_case(selected_case)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-                
-                comments = selected_case.get("comments", {})
-                if comments:
-                    with st.expander("查看所有注释"):
-                        for bar_num, comment_data in sorted(comments.items(), key=lambda x: int(x[0])):
-                            original = comment_data.get("original", "")
-                            st.text(f"K线 #{bar_num}: {original}")
-            else:
-                st.warning("该案例没有K线数据")
-        
-        with col_image:
-            st.subheader(f"🖼️ 对照图片")
-            
-            # 从GitHub加载案例对应的图片
-            image_data = find_image_for_case(case_id)
-            
-            if image_data:
-                st.image(image_data, caption=f"对照图: {case_id}.jpg", use_container_width=True)
-                st.success(f"✅ 已从GitHub加载对照图片")
-            else:
-                st.warning(f"❌ 未找到对照图片")
-                st.info(f"期望的图片路径: {IMAGES_PATH}/{case_id}.jpg")
-else:
-    st.info("暂无案例数据，请先创建案例")
-
-st.divider()
-
 # ==================== 原有功能：步骤1 加载数据 ====================
 st.header("步骤1：加载数据")
 
@@ -561,6 +469,23 @@ with col_right:
             st.session_state.html_annotations = {}
             st.session_state.html_filename = None
             st.rerun()
+
+# ==================== 对照图显示（在步骤1和步骤2之间） ====================
+if st.session_state.html_filename:
+    st.divider()
+    st.header("🖼️ 对照图片")
+    
+    # 根据HTML文件名从GitHub加载对应的jpg图片
+    image_data = find_image_for_html(st.session_state.html_filename)
+    
+    if image_data:
+        st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
+        st.success(f"✅ 已从GitHub加载对照图片: {IMAGES_PATH}/{os.path.splitext(st.session_state.html_filename)[0]}.jpg")
+    else:
+        expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
+        st.warning(f"❌ 未找到对照图片")
+        st.info(f"期望的图片路径: {IMAGES_PATH}/{expected_image}")
+        st.info(f"请在GitHub仓库的 {IMAGES_PATH}/ 目录中上传 {expected_image}")
 
 st.divider()
 
@@ -676,6 +601,56 @@ if st.session_state.data_file_loaded:
                         st.success(f"保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
                     except Exception as e:
                         st.error(f"保存失败: {e}")
+
+# ==================== 已保存案例关联图 ====================
+st.divider()
+st.header("📊 已保存案例关联图")
+
+db = load_cases_database()
+cases = db.get("cases", [])
+
+if cases:
+    case_options = {f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}": c for c in cases}
+    selected_case_label = st.selectbox(
+        "选择案例查看关联图",
+        options=list(case_options.keys()),
+        key="case_viewer_select"
+    )
+    
+    if selected_case_label:
+        selected_case = case_options[selected_case_label]
+        case_id = selected_case.get("case_id", "")
+        
+        col_chart, col_image = st.columns([3, 2])
+        
+        with col_chart:
+            st.subheader(f"📈 K线图 - {selected_case.get('title', case_id)}")
+            fig = plot_kline_from_case(selected_case)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+                
+                comments = selected_case.get("comments", {})
+                if comments:
+                    with st.expander("查看所有注释"):
+                        for bar_num, comment_data in sorted(comments.items(), key=lambda x: int(x[0])):
+                            original = comment_data.get("original", "")
+                            st.text(f"K线 #{bar_num}: {original}")
+            else:
+                st.warning("该案例没有K线数据")
+        
+        with col_image:
+            st.subheader(f"🖼️ 对照图片")
+            
+            image_data = find_image_for_case(case_id)
+            
+            if image_data:
+                st.image(image_data, caption=f"对照图: {case_id}.jpg", use_container_width=True)
+                st.success(f"✅ 已从GitHub加载对照图片")
+            else:
+                st.warning(f"❌ 未找到对照图片")
+                st.info(f"期望的图片路径: {IMAGES_PATH}/{case_id}.jpg")
+else:
+    st.info("暂无案例数据，请先创建案例")
 
 st.divider()
 st.header("案例管理")
