@@ -9,6 +9,8 @@ import json
 import requests
 import base64
 import io
+from pathlib import Path
+import glob
 
 st.set_page_config(page_title="Al Brooks 案例构建器", layout="wide")
 
@@ -294,11 +296,181 @@ def delete_case_from_database(case_id):
     save_cases_database(db)
     return True
 
+def find_image_for_case(case_id, images_dir="images"):
+    """在images目录中查找与case_id匹配的jpg文件"""
+    if not os.path.exists(images_dir):
+        return None
+    
+    # 先精确匹配
+    exact_path = os.path.join(images_dir, f"{case_id}.jpg")
+    if os.path.exists(exact_path):
+        return exact_path
+    
+    # 模糊匹配：查找包含case_id的jpg文件
+    jpg_files = glob.glob(os.path.join(images_dir, "*.jpg"))
+    for jpg_file in jpg_files:
+        filename = os.path.basename(jpg_file)
+        if case_id in filename:
+            return jpg_file
+    
+    return None
+
+def plot_kline_from_case(case_data):
+    """根据案例数据绘制K线图"""
+    bars = case_data.get("bars", [])
+    comments = case_data.get("comments", {})
+    first_bar_offset = case_data.get("first_bar_offset", 0)
+    
+    if not bars:
+        return None
+    
+    # 将bars数据转为DataFrame便于绘图
+    df_bars = pd.DataFrame(bars)
+    
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    x_values = [b["bar"] for b in bars]
+    
+    hover_texts = []
+    for b in bars:
+        bar_num = b["bar"]
+        o, h, l, c, v = b["open"], b["high"], b["low"], b["close"], b["volume"]
+        change = c - o
+        change_pct = (change / o * 100) if o != 0 else 0
+        
+        if bar_num > 0:
+            base_text = (
+                f"K线 #{bar_num}<br>"
+                f"开: {o:.2f} | 高: {h:.2f}<br>低: {l:.2f} | 收: {c:.2f}<br>"
+                f"涨跌: {change:+.2f} ({change_pct:+.2f}%)<br>量: {v:,.0f}"
+            )
+        else:
+            base_text = (
+                f"盘前 #{bar_num}<br>"
+                f"开: {o:.2f} | 高: {h:.2f}<br>低: {l:.2f} | 收: {c:.2f}<br>"
+                f"涨跌: {change:+.2f} ({change_pct:+.2f}%)<br>量: {v:,.0f}"
+            )
+        
+        comment_key = str(bar_num) if bar_num > 0 else None
+        if comment_key and comment_key in comments:
+            desc = comments[comment_key].get("original", "")
+            if desc:
+                if len(desc) > 60:
+                    desc = desc[:60] + "..."
+                base_text += f"<br><br>原图#{bar_num}: {desc}"
+        
+        hover_texts.append(base_text)
+    
+    fig.add_trace(go.Candlestick(
+        x=x_values, open=df_bars['open'], high=df_bars['high'], 
+        low=df_bars['low'], close=df_bars['close'],
+        name='', increasing=dict(line=dict(color='red', width=1.5), fillcolor='red'),
+        decreasing=dict(line=dict(color='black', width=1.5), fillcolor='black'),
+        text=hover_texts, hoverinfo='text', showlegend=False
+    ), row=1, col=1)
+    
+    colors = ['red' if df_bars['close'].iloc[i] >= df_bars['open'].iloc[i] else 'black' for i in range(len(df_bars))]
+    fig.add_trace(go.Bar(x=x_values, y=df_bars['volume'], name='', marker_color=colors,
+                         opacity=0.4, showlegend=False, hovertemplate='量: %{y:,.0f}<extra></extra>'), row=2, col=1)
+    
+    annotations_on_chart = []
+    for i, b in enumerate(bars):
+        bar_num = b["bar"]
+        is_green = b['close'] >= b['open']
+        y_pos = b['high'] * 1.002 if is_green else b['low'] * 0.998
+        color = 'red' if is_green else 'black'
+        
+        comment_key = str(bar_num) if bar_num > 0 else None
+        text = f"<b>{bar_num}</b>*" if (comment_key and comment_key in comments) else f"<b>{bar_num}</b>"
+        
+        annotations_on_chart.append(dict(
+            x=x_values[i], y=y_pos, text=text, showarrow=False,
+            font=dict(size=10, color=color), xanchor='center',
+            yanchor='bottom' if is_green else 'top'
+        ))
+    
+    title = case_data.get("title", "案例K线图")
+    fig.update_layout(title=title, height=600, hovermode='x unified', showlegend=False,
+                      template='plotly_white', margin=dict(l=50, r=30, t=50, b=30),
+                      annotations=annotations_on_chart)
+    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', row=1, col=1)
+    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', row=2, col=1)
+    fig.update_yaxes(title_text="", showgrid=True, gridcolor='#f0f0f0', row=1, col=1)
+    fig.update_yaxes(title_text="", showgrid=False, row=2, col=1)
+    return fig
+
 if not GITHUB_TOKEN:
     st.warning("请在Streamlit Secrets中设置 GITHUB_TOKEN")
 
 st.title("Al Brooks 案例构建器")
 
+# ==================== 新增：案例关联图显示 ====================
+st.header("📊 案例关联图")
+st.info("选择一个已保存的案例，右侧将显示对应的K线图和images文件夹中的对照图片")
+
+db = load_cases_database()
+cases = db.get("cases", [])
+
+if cases:
+    # 创建案例选择器
+    case_options = {f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}": c for c in cases}
+    selected_case_label = st.selectbox(
+        "选择案例查看关联图",
+        options=list(case_options.keys()),
+        key="case_viewer_select"
+    )
+    
+    if selected_case_label:
+        selected_case = case_options[selected_case_label]
+        case_id = selected_case.get("case_id", "")
+        
+        col_chart, col_image = st.columns([3, 2])
+        
+        with col_chart:
+            st.subheader(f"📈 K线图 - {selected_case.get('title', case_id)}")
+            fig = plot_kline_from_case(selected_case)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # 显示注释列表
+                comments = selected_case.get("comments", {})
+                if comments:
+                    with st.expander("查看所有注释"):
+                        for bar_num, comment_data in sorted(comments.items(), key=lambda x: int(x[0])):
+                            original = comment_data.get("original", "")
+                            st.text(f"K线 #{bar_num}: {original}")
+            else:
+                st.warning("该案例没有K线数据")
+        
+        with col_image:
+            st.subheader(f"🖼️ 对照图片")
+            
+            # 在images文件夹中查找对应的jpg文件
+            image_path = find_image_for_case(case_id)
+            
+            if image_path and os.path.exists(image_path):
+                st.image(image_path, caption=f"对照图: {os.path.basename(image_path)}", use_container_width=True)
+                st.success(f"✅ 已找到对照图片: {os.path.basename(image_path)}")
+            else:
+                st.warning(f"❌ 未找到对照图片")
+                st.info(f"请在 images 文件夹中添加名为 '{case_id}.jpg' 的图片文件")
+                
+                # 显示images文件夹中现有的jpg文件供参考
+                if os.path.exists("images"):
+                    jpg_files = glob.glob(os.path.join("images", "*.jpg"))
+                    if jpg_files:
+                        st.text("images文件夹中现有的jpg文件:")
+                        for f in jpg_files:
+                            st.text(f"  - {os.path.basename(f)}")
+                    else:
+                        st.text("images文件夹中没有jpg文件")
+                else:
+                    st.text("images文件夹不存在，请创建并添加对照图片")
+else:
+    st.info("暂无案例数据，请先创建案例")
+
+st.divider()
+
+# ==================== 原有功能：步骤1 加载数据 ====================
 st.header("步骤1：加载数据")
 
 col_left, col_right = st.columns(2)
