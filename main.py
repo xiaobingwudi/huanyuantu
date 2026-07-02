@@ -22,6 +22,15 @@ GITHUB_BRANCH = st.secrets.get("DATA_REPO_BRANCH", "main")
 PARQUET_PATH = st.secrets.get("PARQUET_PATH", "ES_CONTINUOUS_5M.parquet")
 GITHUB_REPO = f"{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
 
+# 从PARQUET_PATH推断images目录路径
+# 如果PARQUET_PATH是 "ES_CONTINUOUS_5M.parquet"，则images在同一目录
+# 如果PARQUET_PATH是 "data/ES_CONTINUOUS_5M.parquet"，则images在 data/images/
+PARQUET_DIR = os.path.dirname(PARQUET_PATH)
+if PARQUET_DIR:
+    IMAGES_PATH = f"{PARQUET_DIR}/images"
+else:
+    IMAGES_PATH = "images"
+
 if 'html_annotations' not in st.session_state:
     st.session_state.html_annotations = {}
 if 'df_5m' not in st.session_state:
@@ -38,6 +47,8 @@ if 'builder_end' not in st.session_state:
     st.session_state.builder_end = None
 if 'html_filename' not in st.session_state:
     st.session_state.html_filename = None
+if 'current_image' not in st.session_state:
+    st.session_state.current_image = None
 
 def get_github_headers():
     return {
@@ -121,6 +132,48 @@ def load_parquet_from_github():
             return None
     except Exception as e:
         return None
+
+def load_image_from_github(image_name):
+    """从GitHub加载图片文件"""
+    if not GITHUB_TOKEN:
+        return None
+    
+    # 构建图片的GitHub路径
+    image_path = f"{IMAGES_PATH}/{image_name}"
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{image_path}"
+    params = {"ref": GITHUB_BRANCH}
+    
+    try:
+        response = requests.get(url, headers=get_github_headers(), params=params)
+        
+        if response.status_code == 200:
+            return response.content
+        else:
+            return None
+    except Exception as e:
+        return None
+
+def find_image_for_html(filename):
+    """根据HTML文件名从GitHub加载对应的jpg图片"""
+    if not filename:
+        return None
+    
+    # 从HTML文件名提取基础名称（不含扩展名）
+    base_name = os.path.splitext(filename)[0]
+    image_name = f"{base_name}.jpg"
+    
+    # 从GitHub加载图片
+    image_data = load_image_from_github(image_name)
+    return image_data
+
+def find_image_for_case(case_id):
+    """根据案例ID从GitHub加载对应的jpg图片"""
+    if not case_id:
+        return None
+    
+    image_name = f"{case_id}.jpg"
+    image_data = load_image_from_github(image_name)
+    return image_data
 
 def load_html_annotations(file_content, filename):
     try:
@@ -296,47 +349,6 @@ def delete_case_from_database(case_id):
     save_cases_database(db)
     return True
 
-def find_image_for_html(filename, images_dir="images"):
-    """根据HTML文件名查找对应的jpg图片"""
-    if not filename or not os.path.exists(images_dir):
-        return None
-    
-    # 从HTML文件名提取基础名称（不含扩展名）
-    base_name = os.path.splitext(filename)[0]
-    
-    # 精确匹配：查找 base_name.jpg
-    exact_path = os.path.join(images_dir, f"{base_name}.jpg")
-    if os.path.exists(exact_path):
-        return exact_path
-    
-    # 模糊匹配：查找包含基础名称的jpg文件
-    jpg_files = glob.glob(os.path.join(images_dir, "*.jpg"))
-    for jpg_file in jpg_files:
-        jpg_basename = os.path.basename(jpg_file)
-        if base_name in jpg_basename:
-            return jpg_file
-    
-    return None
-
-def find_image_for_case(case_id, images_dir="images"):
-    """根据案例ID查找对应的jpg图片"""
-    if not case_id or not os.path.exists(images_dir):
-        return None
-    
-    # 精确匹配
-    exact_path = os.path.join(images_dir, f"{case_id}.jpg")
-    if os.path.exists(exact_path):
-        return exact_path
-    
-    # 模糊匹配
-    jpg_files = glob.glob(os.path.join(images_dir, "*.jpg"))
-    for jpg_file in jpg_files:
-        filename = os.path.basename(jpg_file)
-        if case_id in filename:
-            return jpg_file
-    
-    return None
-
 def plot_kline_from_case(case_data):
     """根据案例数据绘制K线图"""
     bars = case_data.get("bars", [])
@@ -433,30 +445,17 @@ if st.session_state.html_filename:
     with col_image:
         st.subheader(f"🖼️ 对照图片")
         
-        # 根据HTML文件名查找对应的jpg图片
-        image_path = find_image_for_html(st.session_state.html_filename)
+        # 根据HTML文件名从GitHub加载对应的jpg图片
+        image_data = find_image_for_html(st.session_state.html_filename)
         
-        if image_path and os.path.exists(image_path):
-            st.image(image_path, caption=f"对照图: {os.path.basename(image_path)}", use_container_width=True)
-            st.success(f"✅ 已找到对照图片: {os.path.basename(image_path)}")
+        if image_data:
+            st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
+            st.success(f"✅ 已从GitHub加载对照图片")
         else:
+            expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
             st.warning(f"❌ 未找到对照图片")
-            
-            # 显示期望的文件名
-            expected_jpg = os.path.splitext(st.session_state.html_filename)[0] + ".jpg"
-            st.info(f"期望的图片文件: images/{expected_jpg}")
-            
-            # 显示images文件夹中现有的jpg文件供参考
-            if os.path.exists("images"):
-                jpg_files = glob.glob(os.path.join("images", "*.jpg"))
-                if jpg_files:
-                    with st.expander("images文件夹中现有的jpg文件"):
-                        for f in jpg_files:
-                            st.text(f"  - {os.path.basename(f)}")
-                else:
-                    st.text("images文件夹中没有jpg文件")
-            else:
-                st.text("images文件夹不存在，请创建并添加对照图片")
+            st.info(f"期望的图片路径: {IMAGES_PATH}/{expected_image}")
+            st.info(f"请在GitHub仓库的 {IMAGES_PATH}/ 目录中上传 {expected_image}")
     
     with col_chart:
         st.subheader(f"📋 HTML注释信息")
@@ -508,14 +507,15 @@ if cases:
         with col_image:
             st.subheader(f"🖼️ 对照图片")
             
-            image_path = find_image_for_case(case_id)
+            # 从GitHub加载案例对应的图片
+            image_data = find_image_for_case(case_id)
             
-            if image_path and os.path.exists(image_path):
-                st.image(image_path, caption=f"对照图: {os.path.basename(image_path)}", use_container_width=True)
-                st.success(f"✅ 已找到对照图片: {os.path.basename(image_path)}")
+            if image_data:
+                st.image(image_data, caption=f"对照图: {case_id}.jpg", use_container_width=True)
+                st.success(f"✅ 已从GitHub加载对照图片")
             else:
                 st.warning(f"❌ 未找到对照图片")
-                st.info(f"请在 images 文件夹中添加名为 '{case_id}.jpg' 的图片文件")
+                st.info(f"期望的图片路径: {IMAGES_PATH}/{case_id}.jpg")
 else:
     st.info("暂无案例数据，请先创建案例")
 
