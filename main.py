@@ -9,9 +9,6 @@ import json
 import requests
 import base64
 import io
-from pathlib import Path
-import glob
-from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Al Brooks 案例构建器", layout="wide")
 
@@ -22,13 +19,7 @@ GITHUB_PATH = st.secrets.get("DATA_FILE_PATH", "cases_database.json")
 GITHUB_BRANCH = st.secrets.get("DATA_REPO_BRANCH", "main")
 PARQUET_PATH = st.secrets.get("PARQUET_PATH", "ES_CONTINUOUS_5M.parquet")
 GITHUB_REPO = f"{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}"
-
-# 从PARQUET_PATH推断images目录路径
-PARQUET_DIR = os.path.dirname(PARQUET_PATH)
-if PARQUET_DIR:
-    IMAGES_PATH = f"{PARQUET_DIR}/images"
-else:
-    IMAGES_PATH = "images"
+IMAGES_PATH = "images"  # 与ES文件同目录的images文件夹
 
 if 'html_annotations' not in st.session_state:
     st.session_state.html_annotations = {}
@@ -46,16 +37,6 @@ if 'builder_end' not in st.session_state:
     st.session_state.builder_end = None
 if 'html_filename' not in st.session_state:
     st.session_state.html_filename = None
-if 'combined_df' not in st.session_state:
-    st.session_state.combined_df = None
-if 'pre_df' not in st.session_state:
-    st.session_state.pre_df = None
-if 'main_df' not in st.session_state:
-    st.session_state.main_df = None
-if 'saved_case_id' not in st.session_state:
-    st.session_state.saved_case_id = None
-if 'data_loading_started' not in st.session_state:
-    st.session_state.data_loading_started = False
 
 def get_github_headers():
     return {
@@ -139,57 +120,6 @@ def load_parquet_from_github():
             return None
     except Exception as e:
         return None
-
-def load_image_from_github(image_name):
-    """从GitHub加载图片文件"""
-    if not GITHUB_TOKEN:
-        return None
-    
-    image_path = f"{IMAGES_PATH}/{image_name}"
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{image_path}"
-    params = {"ref": GITHUB_BRANCH}
-    
-    try:
-        response = requests.get(url, headers=get_github_headers(), params=params)
-        
-        if response.status_code == 200:
-            return response.content
-        else:
-            return None
-    except Exception as e:
-        return None
-
-def find_image_for_html(filename):
-    """根据HTML文件名从GitHub加载对应的jpg图片"""
-    if not filename:
-        return None
-    
-    base_name = os.path.splitext(filename)[0]
-    image_name = f"{base_name}.jpg"
-    
-    image_data = load_image_from_github(image_name)
-    return image_data
-
-def find_image_for_case(case_id):
-    """根据案例ID从GitHub加载对应的jpg图片"""
-    if not case_id:
-        return None
-    
-    image_name = f"{case_id}.jpg"
-    image_data = load_image_from_github(image_name)
-    return image_data
-
-def get_previous_trading_date(date_str):
-    """获取前一个交易日（简化处理，跳过周末）"""
-    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-    prev_date = date_obj - timedelta(days=1)
-    
-    if prev_date.weekday() == 5:  # 周六
-        prev_date = prev_date - timedelta(days=1)
-    elif prev_date.weekday() == 6:  # 周日
-        prev_date = prev_date - timedelta(days=2)
-    
-    return prev_date.strftime('%Y-%m-%d')
 
 def load_html_annotations(file_content, filename):
     try:
@@ -292,25 +222,35 @@ def get_case_id_from_filename(filename):
     name = os.path.splitext(filename)[0]
     return re.sub(r'[^\w\-_]', '_', name)
 
-def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df_main, annotations):
-    pre_count = len(df_pre)
-    main_count = min(81, len(df_main))
+def save_case_to_database(case_id, title, date, start_time, end_time, df_selected, annotations, first_bar_number):
+    start_idx = first_bar_number - 1
+    pre_count = min(6, start_idx)
+    main_count = 80
+    
+    if pre_count > 0:
+        df_pre = df_selected.iloc[start_idx - pre_count:start_idx].copy()
+        df_main = df_selected.iloc[start_idx:start_idx + main_count].copy()
+        df_save = pd.concat([df_pre, df_main])
+    else:
+        df_save = df_selected.iloc[start_idx:start_idx + main_count].copy()
+    
+    actual_main = min(main_count, len(df_selected) - start_idx)
     
     bars_data = []
+    if pre_count > 0:
+        for i in range(pre_count):
+            row = df_save.iloc[i]
+            bars_data.append({
+                "bar": -(pre_count - i),
+                "open": round(float(row['open']), 2),
+                "high": round(float(row['high']), 2),
+                "low": round(float(row['low']), 2),
+                "close": round(float(row['close']), 2),
+                "volume": int(row['volume'])
+            })
     
-    for i in range(pre_count):
-        row = df_pre.iloc[i]
-        bars_data.append({
-            "bar": -(pre_count - i),
-            "open": round(float(row['open']), 2),
-            "high": round(float(row['high']), 2),
-            "low": round(float(row['low']), 2),
-            "close": round(float(row['close']), 2),
-            "volume": int(row['volume'])
-        })
-    
-    for i in range(main_count):
-        row = df_main.iloc[i]
+    for i in range(actual_main):
+        row = df_save.iloc[pre_count + i]
         bars_data.append({
             "bar": i + 1,
             "open": round(float(row['open']), 2),
@@ -322,7 +262,7 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df
     
     comments_data = {}
     for original_num, desc in annotations.items():
-        if 1 <= original_num <= main_count:
+        if 1 <= original_num <= actual_main:
             comments_data[str(original_num)] = {
                 "original": desc,
                 "translation": "",
@@ -332,9 +272,8 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df
     case_record = {
         "case_id": case_id, "title": title, "date": date,
         "start": start_time, "end": end_time,
-        "pre_bars": pre_count, "main_bars": main_count,
-        "first_bar_offset": pre_count,
-        "pre_date": get_previous_trading_date(date),
+        "pre_bars": pre_count, "main_bars": actual_main,
+        "first_bar_offset": first_bar_number - 1,
         "bars": bars_data, "comments": comments_data
     }
     
@@ -356,9 +295,33 @@ def delete_case_from_database(case_id):
     save_cases_database(db)
     return True
 
+def find_image_for_html(filename):
+    """根据HTML文件名查找对应的jpg图片"""
+    if not filename:
+        return None
+    
+    base_name = os.path.splitext(filename)[0]
+    image_path = os.path.join(IMAGES_PATH, f"{base_name}.jpg")
+    
+    if os.path.exists(image_path):
+        return image_path
+    return None
+
+def find_image_for_case(case_id):
+    """根据案例ID查找对应的jpg图片"""
+    if not case_id:
+        return None
+    
+    image_path = os.path.join(IMAGES_PATH, f"{case_id}.jpg")
+    
+    if os.path.exists(image_path):
+        return image_path
+    return None
+
 def plot_kline_from_case(case_data):
     bars = case_data.get("bars", [])
     comments = case_data.get("comments", {})
+    first_bar_offset = case_data.get("first_bar_offset", 0)
     
     if not bars:
         return None
@@ -441,7 +404,6 @@ if not GITHUB_TOKEN:
 
 st.title("Al Brooks 案例构建器")
 
-# ==================== 步骤1 加载数据 ====================
 st.header("步骤1：加载数据")
 
 col_left, col_right = st.columns(2)
@@ -547,19 +509,16 @@ if st.session_state.data_file_loaded:
                 pre_start = max(1, first_bar_number - 6)
                 st.info(f"保存: #{pre_start}~#{first_bar_number-1} (盘前) + #{first_bar_number}起 (正式)")
         
-        # ==================== 对照图显示（在步骤3和步骤4之间） ====================
+        # 对照图片（步骤3和步骤4之间）
         if st.session_state.html_filename:
             st.divider()
             st.subheader("🖼️ 对照图片")
-            
-            image_data = find_image_for_html(st.session_state.html_filename)
-            
-            if image_data:
-                st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
-                st.success(f"✅ 已加载对照图片")
+            image_path = find_image_for_html(st.session_state.html_filename)
+            if image_path:
+                st.image(image_path, caption=f"对照图: {os.path.basename(image_path)}", use_container_width=True)
             else:
-                expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
-                st.warning(f"❌ 未找到对照图片: {IMAGES_PATH}/{expected_image}")
+                expected_name = os.path.splitext(st.session_state.html_filename)[0] + ".jpg"
+                st.warning(f"未找到对照图片: images/{expected_name}")
         
         st.divider()
         st.header("步骤4：预览并保存")
@@ -597,96 +556,19 @@ if st.session_state.data_file_loaded:
                     st.error("请先配置 GITHUB_TOKEN")
                 else:
                     try:
-                        # 使用原有的save_case_to_database逻辑
-                        start_idx = first_bar_number - 1
-                        pre_count = min(6, start_idx)
-                        main_count = min(80, len(st.session_state.builder_df) - start_idx)
-                        
-                        if pre_count > 0:
-                            df_pre = st.session_state.builder_df.iloc[start_idx - pre_count:start_idx].copy()
-                            df_main = st.session_state.builder_df.iloc[start_idx:start_idx + main_count].copy()
-                        else:
-                            df_pre = st.session_state.builder_df.iloc[0:0].copy()
-                            df_main = st.session_state.builder_df.iloc[start_idx:start_idx + main_count].copy()
-                        
                         saved_bars, saved_comments, updated = save_case_to_database(
                             case_id=case_id, title=case_title,
                             date=st.session_state.builder_date,
                             start_time=st.session_state.builder_start,
                             end_time=st.session_state.builder_end,
-                            df_pre=df_pre,
-                            df_main=df_main,
-                            annotations=st.session_state.html_annotations
+                            df_selected=st.session_state.builder_df,
+                            annotations=st.session_state.html_annotations,
+                            first_bar_number=first_bar_number
                         )
-                        st.session_state.saved_case_id = case_id
                         st.balloons()
                         st.success(f"保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
-                        st.rerun()
                     except Exception as e:
                         st.error(f"保存失败: {e}")
-
-# ==================== 已保存案例关联图 ====================
-st.divider()
-st.header("📊 已保存案例关联图")
-
-db = load_cases_database()
-cases = db.get("cases", [])
-
-if cases:
-    # 倒序排列（最新的在前面）
-    cases_reversed = list(reversed(cases))
-    
-    case_options = [f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}" for c in cases_reversed]
-    
-    # 如果有刚保存的案例，自动选中
-    default_index = 0
-    if st.session_state.saved_case_id:
-        for i, c in enumerate(cases_reversed):
-            if c.get("case_id") == st.session_state.saved_case_id:
-                default_index = i
-                break
-    
-    selected_case_label = st.selectbox(
-        "选择案例查看关联图",
-        options=case_options,
-        index=default_index,
-        key="case_viewer_select"
-    )
-    
-    if selected_case_label:
-        selected_index = case_options.index(selected_case_label)
-        selected_case = cases_reversed[selected_index]
-        case_id = selected_case.get("case_id", "")
-        
-        col_chart, col_image = st.columns([3, 2])
-        
-        with col_chart:
-            st.subheader(f"📈 K线图 - {selected_case.get('title', case_id)}")
-            fig = plot_kline_from_case(selected_case)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-                
-                comments = selected_case.get("comments", {})
-                if comments:
-                    with st.expander("查看所有注释"):
-                        for bar_num, comment_data in sorted(comments.items(), key=lambda x: int(x[0])):
-                            original = comment_data.get("original", "")
-                            st.text(f"K线 #{bar_num}: {original}")
-            else:
-                st.warning("该案例没有K线数据")
-        
-        with col_image:
-            st.subheader(f"🖼️ 对照图片")
-            
-            image_data = find_image_for_case(case_id)
-            
-            if image_data:
-                st.image(image_data, caption=f"对照图: {case_id}.jpg", use_container_width=True)
-                st.success(f"✅ 已加载对照图片")
-            else:
-                st.warning(f"❌ 未找到对照图片: {IMAGES_PATH}/{case_id}.jpg")
-else:
-    st.info("暂无案例数据，请先创建案例")
 
 st.divider()
 st.header("案例管理")
@@ -698,7 +580,7 @@ with st.expander("查看和管理所有案例", expanded=True):
     st.caption(f"数据源: {GITHUB_REPO}/{GITHUB_PATH}")
     
     if cases:
-        # 倒序显示（最新保存的在最上面）
+        # 倒序显示
         for i, c in enumerate(reversed(cases)):
             cid = c.get("case_id", f"case_{i}")
             date = c.get("date", "未知")
