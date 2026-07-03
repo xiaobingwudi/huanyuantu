@@ -552,30 +552,11 @@ if st.session_state.data_file_loaded:
     
     if 'combined_df' in st.session_state and st.session_state.combined_df is not None:
         st.divider()
-        st.header("步骤3：K线编号说明")
+        st.header("步骤3：校正K线编号")
+        st.warning("盘前6根来自前一交易日19:45-20:10(编号-6到-1)，正式K线来自当日13:30-20:10(编号1起)")
         
         pre_count = len(st.session_state.pre_df)
         main_count = len(st.session_state.main_df)
-        
-        if pre_count > 0:
-            pre_start_time = st.session_state.pre_df.index[0].strftime('%Y-%m-%d %H:%M')
-            pre_end_time = st.session_state.pre_df.index[-1].strftime('%Y-%m-%d %H:%M')
-        else:
-            pre_start_time = 'N/A'
-            pre_end_time = 'N/A'
-        
-        if main_count > 0:
-            main_start_time = st.session_state.main_df.index[0].strftime('%Y-%m-%d %H:%M')
-            main_end_time = st.session_state.main_df.index[-1].strftime('%Y-%m-%d %H:%M')
-        else:
-            main_start_time = 'N/A'
-            main_end_time = 'N/A'
-        
-        st.info(f"""
-        **K线编号规则：**
-        - 盘前K线（{pre_start_time} 至 {pre_end_time}）：编号 #{-(pre_count)} 到 #-1
-        - 正式K线（{main_start_time} 至 {main_end_time}）：编号 #1 到 #{main_count}
-        """)
         
         col_a, col_b, col_c = st.columns([2, 1, 2])
         with col_a:
@@ -588,8 +569,8 @@ if st.session_state.data_file_loaded:
         with col_c:
             if pre_count > 0:
                 prev_date = get_previous_trading_date(st.session_state.builder_date)
-                st.info(f"盘前数据来源: {prev_date} 19:45-20:10")
-            st.info(f"正式数据来源: {st.session_state.builder_date} {st.session_state.builder_start}-{st.session_state.builder_end}")
+                st.info(f"盘前: {prev_date} 19:45-20:10")
+            st.info(f"正式: {st.session_state.builder_date} {st.session_state.builder_start}-{st.session_state.builder_end}")
         
         # ==================== 对照图显示（在步骤3和步骤4之间） ====================
         if st.session_state.html_filename:
@@ -688,7 +669,6 @@ if cases:
     )
     
     if selected_case_label:
-        # 找到选中的案例在倒序列表中的索引
         selected_index = case_options.index(selected_case_label)
         selected_case = cases_reversed[selected_index]
         case_id = selected_case.get("case_id", "")
