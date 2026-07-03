@@ -52,6 +52,10 @@ if 'pre_df' not in st.session_state:
     st.session_state.pre_df = None
 if 'main_df' not in st.session_state:
     st.session_state.main_df = None
+if 'saved_case_id' not in st.session_state:
+    st.session_state.saved_case_id = None
+if 'data_loading_started' not in st.session_state:
+    st.session_state.data_loading_started = False
 
 def get_github_headers():
     return {
@@ -180,10 +184,8 @@ def get_previous_trading_date(date_str):
     date_obj = datetime.strptime(date_str, '%Y-%m-%d')
     prev_date = date_obj - timedelta(days=1)
     
-    # 如果前一天是周六，则再往前推1天到周五
     if prev_date.weekday() == 5:  # 周六
         prev_date = prev_date - timedelta(days=1)
-    # 如果前一天是周日，则再往前推2天到周五
     elif prev_date.weekday() == 6:  # 周日
         prev_date = prev_date - timedelta(days=2)
     
@@ -297,11 +299,10 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df
     
     bars_data = []
     
-    # 保存盘前K线（编号-6到-1）
     for i in range(pre_count):
         row = df_pre.iloc[i]
         bars_data.append({
-            "bar": -(pre_count - i),  # -6, -5, -4, -3, -2, -1
+            "bar": -(pre_count - i),
             "open": round(float(row['open']), 2),
             "high": round(float(row['high']), 2),
             "low": round(float(row['low']), 2),
@@ -309,11 +310,10 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df
             "volume": int(row['volume'])
         })
     
-    # 保存正式K线（编号1到81）
     for i in range(main_count):
         row = df_main.iloc[i]
         bars_data.append({
-            "bar": i + 1,  # 1, 2, 3, ..., 81
+            "bar": i + 1,
             "open": round(float(row['open']), 2),
             "high": round(float(row['high']), 2),
             "low": round(float(row['low']), 2),
@@ -334,7 +334,7 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df
         "case_id": case_id, "title": title, "date": date,
         "start": start_time, "end": end_time,
         "pre_bars": pre_count, "main_bars": main_count,
-        "first_bar_offset": pre_count,  # 偏移量等于盘前K线数量
+        "first_bar_offset": pre_count,
         "pre_date": get_previous_trading_date(date),
         "bars": bars_data, "comments": comments_data
     }
@@ -439,6 +439,16 @@ def plot_kline_from_case(case_data):
     fig.update_yaxes(title_text="", showgrid=False, row=2, col=1)
     return fig
 
+# ==================== 自动加载数据 ====================
+if not st.session_state.data_loading_started and GITHUB_TOKEN:
+    st.session_state.data_loading_started = True
+    
+    with st.spinner("正在自动从GitHub加载数据文件..."):
+        df_5m = load_parquet_from_github()
+        if df_5m is not None:
+            st.session_state.df_5m = df_5m
+            st.session_state.data_file_loaded = True
+
 if not GITHUB_TOKEN:
     st.warning("请在Streamlit Secrets中设置 GITHUB_TOKEN")
 
@@ -450,19 +460,19 @@ st.header("步骤1：加载数据")
 col_left, col_right = st.columns(2)
 
 with col_left:
-    if not st.session_state.data_file_loaded:
-        if st.button("从GitHub加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
-            with st.spinner("正在从GitHub加载18MB数据文件..."):
+    if st.session_state.data_file_loaded:
+        st.success(f"数据已自动加载 ({len(st.session_state.df_5m):,} 根K线)")
+    else:
+        st.error("数据加载失败，请检查GitHub配置")
+        if st.button("重新加载数据", use_container_width=True, type="primary"):
+            with st.spinner("正在从GitHub加载数据文件..."):
                 df_5m = load_parquet_from_github()
                 if df_5m is not None:
                     st.session_state.df_5m = df_5m
                     st.session_state.data_file_loaded = True
-                    st.success(f"数据加载成功！共 {len(df_5m):,} 根K线")
                     st.rerun()
                 else:
                     st.error(f"加载失败，请检查文件路径: {PARQUET_PATH}")
-    else:
-        st.success(f"数据已加载 ({len(st.session_state.df_5m):,} 根K线)")
 
 with col_right:
     html_file = st.file_uploader("上传HTML说明文件 (.html)", type=['html'], key="html_uploader")
@@ -526,16 +536,13 @@ if st.session_state.data_file_loaded:
     
     if load_data:
         try:
-            # 获取前一个交易日
             prev_date = get_previous_trading_date(builder_date)
             
-            # 加载前一日盘前数据：19:45 - 20:10（最后6根5分钟K线）
             pre_start = pd.to_datetime(f"{prev_date} 19:45")
             pre_end = pd.to_datetime(f"{prev_date} 20:10")
             mask_pre = (df.index >= pre_start) & (df.index <= pre_end)
             df_pre = df[mask_pre].copy()
             
-            # 加载当日正式数据：13:30 - 20:10（81根5分钟K线）
             main_start = pd.to_datetime(f"{builder_date} 13:30")
             main_end = pd.to_datetime(f"{builder_date} 20:10")
             mask_main = (df.index >= main_start) & (df.index <= main_end)
@@ -548,7 +555,6 @@ if st.session_state.data_file_loaded:
                 st.session_state.builder_start = builder_start
                 st.session_state.builder_end = builder_end
                 
-                # 合并数据用于预览
                 combined = pd.concat([df_pre, df_main])
                 st.session_state.combined_df = combined
                 st.session_state.builder_df = combined
@@ -566,10 +572,24 @@ if st.session_state.data_file_loaded:
         pre_count = len(st.session_state.pre_df)
         main_count = len(st.session_state.main_df)
         
+        if pre_count > 0:
+            pre_start_time = st.session_state.pre_df.index[0].strftime('%Y-%m-%d %H:%M')
+            pre_end_time = st.session_state.pre_df.index[-1].strftime('%Y-%m-%d %H:%M')
+        else:
+            pre_start_time = 'N/A'
+            pre_end_time = 'N/A'
+        
+        if main_count > 0:
+            main_start_time = st.session_state.main_df.index[0].strftime('%Y-%m-%d %H:%M')
+            main_end_time = st.session_state.main_df.index[-1].strftime('%Y-%m-%d %H:%M')
+        else:
+            main_start_time = 'N/A'
+            main_end_time = 'N/A'
+        
         st.info(f"""
         **K线编号规则：**
-        - 盘前K线（{st.session_state.pre_df.index[0].strftime('%Y-%m-%d %H:%M') if pre_count > 0 else 'N/A'} 至 {st.session_state.pre_df.index[-1].strftime('%Y-%m-%d %H:%M') if pre_count > 0 else 'N/A'}）：编号 #{-(pre_count)} 到 #-1
-        - 正式K线（{st.session_state.main_df.index[0].strftime('%Y-%m-%d %H:%M') if main_count > 0 else 'N/A'} 至 {st.session_state.main_df.index[-1].strftime('%Y-%m-%d %H:%M') if main_count > 0 else 'N/A'}）：编号 #1 到 #{main_count}
+        - 盘前K线（{pre_start_time} 至 {pre_end_time}）：编号 #{-(pre_count)} 到 #-1
+        - 正式K线（{main_start_time} 至 {main_end_time}）：编号 #1 到 #{main_count}
         """)
         
         col_a, col_b, col_c = st.columns([2, 1, 2])
@@ -589,7 +609,6 @@ if st.session_state.data_file_loaded:
         st.divider()
         st.header("步骤4：预览并保存")
         
-        # 使用合并数据绘图，盘前偏移量为pre_count
         fig = plot_kline(st.session_state.combined_df, st.session_state.html_annotations,
                          first_bar_offset=pre_count,
                          title=f"预览 - {st.session_state.builder_date} (盘前:{pre_count} + 正式:{main_count})")
@@ -632,8 +651,10 @@ if st.session_state.data_file_loaded:
                             df_main=st.session_state.main_df,
                             annotations=st.session_state.html_annotations
                         )
+                        st.session_state.saved_case_id = case_id
                         st.balloons()
                         st.success(f"保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
+                        st.rerun()
                     except Exception as e:
                         st.error(f"保存失败: {e}")
 
@@ -645,15 +666,33 @@ db = load_cases_database()
 cases = db.get("cases", [])
 
 if cases:
-    case_options = {f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}": c for c in cases}
+    # 如果有刚保存的案例，自动选中
+    default_index = 0
+    if st.session_state.saved_case_id:
+        for i, c in enumerate(cases):
+            if c.get("case_id") == st.session_state.saved_case_id:
+                default_index = i
+                break
+    
+    case_options = {f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}": i for i, c in enumerate(cases)}
+    
+    # 设置默认选择
+    default_label = None
+    for label, idx in case_options.items():
+        if idx == default_index:
+            default_label = label
+            break
+    
     selected_case_label = st.selectbox(
         "选择案例查看关联图",
         options=list(case_options.keys()),
+        index=default_index if default_label else 0,
         key="case_viewer_select"
     )
     
     if selected_case_label:
-        selected_case = case_options[selected_case_label]
+        selected_case_index = case_options[selected_case_label]
+        selected_case = cases[selected_case_index]
         case_id = selected_case.get("case_id", "")
         
         col_chart, col_image = st.columns([3, 2])
@@ -697,7 +736,8 @@ with st.expander("查看和管理所有案例", expanded=True):
     st.caption(f"数据源: {GITHUB_REPO}/{GITHUB_PATH}")
     
     if cases:
-        for i, c in enumerate(cases):
+        # 倒序显示（最新保存的在最上面）
+        for i, c in enumerate(reversed(cases)):
             cid = c.get("case_id", f"case_{i}")
             date = c.get("date", "未知")
             title = c.get("title", "")
