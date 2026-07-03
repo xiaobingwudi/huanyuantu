@@ -495,6 +495,21 @@ with col_right:
             st.session_state.html_filename = None
             st.rerun()
 
+# ==================== 对照图显示（在步骤1和步骤2之间） ====================
+if st.session_state.html_filename:
+    st.divider()
+    st.header("🖼️ 对照图片")
+    
+    image_data = find_image_for_html(st.session_state.html_filename)
+    
+    if image_data:
+        st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
+        st.success(f"✅ 已从GitHub加载对照图片: {IMAGES_PATH}/{os.path.splitext(st.session_state.html_filename)[0]}.jpg")
+    else:
+        expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
+        st.warning(f"❌ 未找到对照图片")
+        st.info(f"期望的图片路径: {IMAGES_PATH}/{expected_image}")
+
 st.divider()
 
 if st.session_state.data_file_loaded:
@@ -590,20 +605,6 @@ if st.session_state.data_file_loaded:
                 prev_date = get_previous_trading_date(st.session_state.builder_date)
                 st.info(f"盘前数据来源: {prev_date} 19:45-20:10")
             st.info(f"正式数据来源: {st.session_state.builder_date} {st.session_state.builder_start}-{st.session_state.builder_end}")
-        
-        # ==================== 对照图显示（步骤3和步骤4之间） ====================
-        if st.session_state.html_filename:
-            st.divider()
-            st.subheader("🖼️ 对照图片")
-            
-            image_data = find_image_for_html(st.session_state.html_filename)
-            
-            if image_data:
-                st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
-                st.success(f"✅ 已从GitHub加载对照图片")
-            else:
-                expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
-                st.warning(f"❌ 未找到对照图片: {IMAGES_PATH}/{expected_image}")
         
         st.divider()
         st.header("步骤4：预览并保存")
