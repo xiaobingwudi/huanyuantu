@@ -293,9 +293,8 @@ def get_case_id_from_filename(filename):
     return re.sub(r'[^\w\-_]', '_', name)
 
 def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df_main, annotations):
-    """保存案例到数据库，df_pre是盘前6根，df_main是正式K线"""
     pre_count = len(df_pre)
-    main_count = min(81, len(df_main))  # 最多81根正式K线
+    main_count = min(81, len(df_main))
     
     bars_data = []
     
@@ -358,10 +357,8 @@ def delete_case_from_database(case_id):
     return True
 
 def plot_kline_from_case(case_data):
-    """根据案例数据绘制K线图"""
     bars = case_data.get("bars", [])
     comments = case_data.get("comments", {})
-    first_bar_offset = case_data.get("first_bar_offset", 0)
     
     if not bars:
         return None
@@ -439,16 +436,6 @@ def plot_kline_from_case(case_data):
     fig.update_yaxes(title_text="", showgrid=False, row=2, col=1)
     return fig
 
-# ==================== 自动加载数据 ====================
-if not st.session_state.data_loading_started and GITHUB_TOKEN:
-    st.session_state.data_loading_started = True
-    
-    with st.spinner("正在自动从GitHub加载数据文件..."):
-        df_5m = load_parquet_from_github()
-        if df_5m is not None:
-            st.session_state.df_5m = df_5m
-            st.session_state.data_file_loaded = True
-
 if not GITHUB_TOKEN:
     st.warning("请在Streamlit Secrets中设置 GITHUB_TOKEN")
 
@@ -460,19 +447,19 @@ st.header("步骤1：加载数据")
 col_left, col_right = st.columns(2)
 
 with col_left:
-    if st.session_state.data_file_loaded:
-        st.success(f"数据已自动加载 ({len(st.session_state.df_5m):,} 根K线)")
-    else:
-        st.error("数据加载失败，请检查GitHub配置")
-        if st.button("重新加载数据", use_container_width=True, type="primary"):
-            with st.spinner("正在从GitHub加载数据文件..."):
+    if not st.session_state.data_file_loaded:
+        if st.button("从GitHub加载 ES_CONTINUOUS_5M.parquet", use_container_width=True, type="primary"):
+            with st.spinner("正在从GitHub加载18MB数据文件..."):
                 df_5m = load_parquet_from_github()
                 if df_5m is not None:
                     st.session_state.df_5m = df_5m
                     st.session_state.data_file_loaded = True
+                    st.success(f"数据加载成功！共 {len(df_5m):,} 根K线")
                     st.rerun()
                 else:
                     st.error(f"加载失败，请检查文件路径: {PARQUET_PATH}")
+    else:
+        st.success(f"数据已加载 ({len(st.session_state.df_5m):,} 根K线)")
 
 with col_right:
     html_file = st.file_uploader("上传HTML说明文件 (.html)", type=['html'], key="html_uploader")
@@ -507,13 +494,13 @@ if st.session_state.data_file_loaded:
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        builder_date = st.text_input("日期 (YYYY-MM-DD) - 正式K线日期", value="2012-12-05")
+        builder_date = st.text_input("日期 (YYYY-MM-DD)", value="2012-12-05")
     with col2:
         col2a, col2b = st.columns(2)
         with col2a:
-            builder_start = st.text_input("正式K线开始 (HH:MM)", value="13:30")
+            builder_start = st.text_input("开始 (HH:MM)", value="13:00")
         with col2b:
-            builder_end = st.text_input("正式K线结束 (HH:MM)", value="20:10")
+            builder_end = st.text_input("结束 (HH:MM)", value="20:10")
     with col3:
         st.write("")
         st.write("")
@@ -521,56 +508,44 @@ if st.session_state.data_file_loaded:
     
     if load_data:
         try:
-            prev_date = get_previous_trading_date(builder_date)
+            start_dt = pd.to_datetime(f"{builder_date} {builder_start}")
+            end_dt = pd.to_datetime(f"{builder_date} {builder_end}")
+            mask = (df.index >= start_dt) & (df.index <= end_dt)
+            builder_df = df[mask].copy()
             
-            pre_start = pd.to_datetime(f"{prev_date} 19:45")
-            pre_end = pd.to_datetime(f"{prev_date} 20:10")
-            mask_pre = (df.index >= pre_start) & (df.index <= pre_end)
-            df_pre = df[mask_pre].copy()
-            
-            main_start = pd.to_datetime(f"{builder_date} 13:30")
-            main_end = pd.to_datetime(f"{builder_date} 20:10")
-            mask_main = (df.index >= main_start) & (df.index <= main_end)
-            df_main = df[mask_main].copy()
-            
-            if len(df_pre) > 0 or len(df_main) > 0:
-                st.session_state.pre_df = df_pre
-                st.session_state.main_df = df_main
+            if len(builder_df) > 0:
+                st.session_state.builder_df = builder_df
                 st.session_state.builder_date = builder_date
                 st.session_state.builder_start = builder_start
                 st.session_state.builder_end = builder_end
-                
-                combined = pd.concat([df_pre, df_main])
-                st.session_state.combined_df = combined
-                st.session_state.builder_df = combined
-                
-                st.success(f"找到盘前 {len(df_pre)} 根K线 ({prev_date} 19:45-20:10) + 正式 {len(df_main)} 根K线 ({builder_date} {builder_start}-{builder_end})")
+                st.success(f"找到 {len(builder_df)} 根K线")
             else:
-                st.error(f"未找到数据")
+                st.error("未找到数据")
         except Exception as e:
             st.error(f"查找失败: {e}")
     
-    if 'combined_df' in st.session_state and st.session_state.combined_df is not None:
+    if 'builder_df' in st.session_state and st.session_state.builder_df is not None:
         st.divider()
         st.header("步骤3：校正K线编号")
-        st.warning("盘前6根来自前一交易日19:45-20:10(编号-6到-1)，正式K线来自当日13:30-20:10(编号1起)")
-        
-        pre_count = len(st.session_state.pre_df)
-        main_count = len(st.session_state.main_df)
+        st.warning("前6根保存为盘前背景(编号-6到-1)，第1根开始为正式K线。")
         
         col_a, col_b, col_c = st.columns([2, 1, 2])
         with col_a:
-            st.metric("盘前K线数量", pre_count)
-            st.metric("正式K线数量", main_count)
+            first_bar_number = st.number_input(
+                "原图第1根K线 = 显示窗口的第几根？",
+                min_value=1, max_value=len(st.session_state.builder_df), value=7, step=1
+            )
         with col_b:
             st.write("")
             st.write("")
-            st.metric("总K线数", pre_count + main_count)
+            pre_count = min(6, first_bar_number - 1)
+            main_count = min(80, len(st.session_state.builder_df) - first_bar_number + 1)
+            st.metric("盘前", pre_count)
+            st.metric("正式", main_count)
         with col_c:
-            if pre_count > 0:
-                prev_date = get_previous_trading_date(st.session_state.builder_date)
-                st.info(f"盘前: {prev_date} 19:45-20:10")
-            st.info(f"正式: {st.session_state.builder_date} {st.session_state.builder_start}-{st.session_state.builder_end}")
+            if first_bar_number > 1:
+                pre_start = max(1, first_bar_number - 6)
+                st.info(f"保存: #{pre_start}~#{first_bar_number-1} (盘前) + #{first_bar_number}起 (正式)")
         
         # ==================== 对照图显示（在步骤3和步骤4之间） ====================
         if st.session_state.html_filename:
@@ -581,18 +556,17 @@ if st.session_state.data_file_loaded:
             
             if image_data:
                 st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
-                st.success(f"✅ 已从GitHub加载对照图片: {IMAGES_PATH}/{os.path.splitext(st.session_state.html_filename)[0]}.jpg")
+                st.success(f"✅ 已加载对照图片")
             else:
                 expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
-                st.warning(f"❌ 未找到对照图片")
-                st.info(f"期望的图片路径: {IMAGES_PATH}/{expected_image}")
+                st.warning(f"❌ 未找到对照图片: {IMAGES_PATH}/{expected_image}")
         
         st.divider()
         st.header("步骤4：预览并保存")
         
-        fig = plot_kline(st.session_state.combined_df, st.session_state.html_annotations,
-                         first_bar_offset=pre_count,
-                         title=f"预览 - {st.session_state.builder_date} (盘前:{pre_count} + 正式:{main_count})")
+        fig = plot_kline(st.session_state.builder_df, st.session_state.html_annotations,
+                         first_bar_offset=first_bar_number - 1,
+                         title=f"预览 - {st.session_state.builder_date}")
         if fig:
             st.plotly_chart(fig, use_container_width=True)
         
@@ -601,7 +575,7 @@ if st.session_state.data_file_loaded:
             preview_data = []
             for original_num, desc in sorted(st.session_state.html_annotations.items()):
                 if 1 <= original_num <= main_count:
-                    preview_data.append({"原图编号": original_num, "K线编号": original_num, "说明": desc[:60]})
+                    preview_data.append({"原图编号": original_num, "bars编号": original_num, "说明": desc[:60]})
             if preview_data:
                 st.dataframe(pd.DataFrame(preview_data), use_container_width=True, height=200)
                 st.info(f"{len(preview_data)} 条注释将被保存")
@@ -623,13 +597,25 @@ if st.session_state.data_file_loaded:
                     st.error("请先配置 GITHUB_TOKEN")
                 else:
                     try:
+                        # 使用原有的save_case_to_database逻辑
+                        start_idx = first_bar_number - 1
+                        pre_count = min(6, start_idx)
+                        main_count = min(80, len(st.session_state.builder_df) - start_idx)
+                        
+                        if pre_count > 0:
+                            df_pre = st.session_state.builder_df.iloc[start_idx - pre_count:start_idx].copy()
+                            df_main = st.session_state.builder_df.iloc[start_idx:start_idx + main_count].copy()
+                        else:
+                            df_pre = st.session_state.builder_df.iloc[0:0].copy()
+                            df_main = st.session_state.builder_df.iloc[start_idx:start_idx + main_count].copy()
+                        
                         saved_bars, saved_comments, updated = save_case_to_database(
                             case_id=case_id, title=case_title,
                             date=st.session_state.builder_date,
                             start_time=st.session_state.builder_start,
                             end_time=st.session_state.builder_end,
-                            df_pre=st.session_state.pre_df,
-                            df_main=st.session_state.main_df,
+                            df_pre=df_pre,
+                            df_main=df_main,
                             annotations=st.session_state.html_annotations
                         )
                         st.session_state.saved_case_id = case_id
@@ -650,6 +636,8 @@ if cases:
     # 倒序排列（最新的在前面）
     cases_reversed = list(reversed(cases))
     
+    case_options = [f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}" for c in cases_reversed]
+    
     # 如果有刚保存的案例，自动选中
     default_index = 0
     if st.session_state.saved_case_id:
@@ -657,9 +645,6 @@ if cases:
             if c.get("case_id") == st.session_state.saved_case_id:
                 default_index = i
                 break
-    
-    # 创建倒序的选项列表
-    case_options = [f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}" for c in cases_reversed]
     
     selected_case_label = st.selectbox(
         "选择案例查看关联图",
@@ -697,10 +682,9 @@ if cases:
             
             if image_data:
                 st.image(image_data, caption=f"对照图: {case_id}.jpg", use_container_width=True)
-                st.success(f"✅ 已从GitHub加载对照图片")
+                st.success(f"✅ 已加载对照图片")
             else:
-                st.warning(f"❌ 未找到对照图片")
-                st.info(f"期望的图片路径: {IMAGES_PATH}/{case_id}.jpg")
+                st.warning(f"❌ 未找到对照图片: {IMAGES_PATH}/{case_id}.jpg")
 else:
     st.info("暂无案例数据，请先创建案例")
 
@@ -722,11 +706,10 @@ with st.expander("查看和管理所有案例", expanded=True):
             pre = c.get("pre_bars", 0)
             main = c.get("main_bars", 0)
             comments_count = len(c.get("comments", {}))
-            pre_date = c.get("pre_date", "未知")
             
             col_info, col_btn1, col_btn2 = st.columns([5, 1, 1])
             with col_info:
-                st.write(f"**{cid}** | {date} | {title} | 盘前({pre_date}):{pre} 正式:{main} 注释:{comments_count}")
+                st.write(f"**{cid}** | {date} | {title} | 盘前:{pre} 正式:{main} 注释:{comments_count}")
             with col_btn1:
                 with st.expander("详情"):
                     st.json(c.get("comments", {}))
