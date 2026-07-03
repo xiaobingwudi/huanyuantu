@@ -495,21 +495,6 @@ with col_right:
             st.session_state.html_filename = None
             st.rerun()
 
-# ==================== 对照图显示（在步骤1和步骤2之间） ====================
-if st.session_state.html_filename:
-    st.divider()
-    st.header("🖼️ 对照图片")
-    
-    image_data = find_image_for_html(st.session_state.html_filename)
-    
-    if image_data:
-        st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
-        st.success(f"✅ 已从GitHub加载对照图片: {IMAGES_PATH}/{os.path.splitext(st.session_state.html_filename)[0]}.jpg")
-    else:
-        expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
-        st.warning(f"❌ 未找到对照图片")
-        st.info(f"期望的图片路径: {IMAGES_PATH}/{expected_image}")
-
 st.divider()
 
 if st.session_state.data_file_loaded:
@@ -606,6 +591,21 @@ if st.session_state.data_file_loaded:
                 st.info(f"盘前数据来源: {prev_date} 19:45-20:10")
             st.info(f"正式数据来源: {st.session_state.builder_date} {st.session_state.builder_start}-{st.session_state.builder_end}")
         
+        # ==================== 对照图显示（在步骤3和步骤4之间） ====================
+        if st.session_state.html_filename:
+            st.divider()
+            st.subheader("🖼️ 对照图片")
+            
+            image_data = find_image_for_html(st.session_state.html_filename)
+            
+            if image_data:
+                st.image(image_data, caption=f"对照图: {os.path.splitext(st.session_state.html_filename)[0]}.jpg", use_container_width=True)
+                st.success(f"✅ 已从GitHub加载对照图片: {IMAGES_PATH}/{os.path.splitext(st.session_state.html_filename)[0]}.jpg")
+            else:
+                expected_image = f"{os.path.splitext(st.session_state.html_filename)[0]}.jpg"
+                st.warning(f"❌ 未找到对照图片")
+                st.info(f"期望的图片路径: {IMAGES_PATH}/{expected_image}")
+        
         st.divider()
         st.header("步骤4：预览并保存")
         
@@ -666,33 +666,31 @@ db = load_cases_database()
 cases = db.get("cases", [])
 
 if cases:
+    # 倒序排列（最新的在前面）
+    cases_reversed = list(reversed(cases))
+    
     # 如果有刚保存的案例，自动选中
     default_index = 0
     if st.session_state.saved_case_id:
-        for i, c in enumerate(cases):
+        for i, c in enumerate(cases_reversed):
             if c.get("case_id") == st.session_state.saved_case_id:
                 default_index = i
                 break
     
-    case_options = {f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}": i for i, c in enumerate(cases)}
-    
-    # 设置默认选择
-    default_label = None
-    for label, idx in case_options.items():
-        if idx == default_index:
-            default_label = label
-            break
+    # 创建倒序的选项列表
+    case_options = [f"{c.get('case_id')} - {c.get('date', '')} - {c.get('title', '')}" for c in cases_reversed]
     
     selected_case_label = st.selectbox(
         "选择案例查看关联图",
-        options=list(case_options.keys()),
-        index=default_index if default_label else 0,
+        options=case_options,
+        index=default_index,
         key="case_viewer_select"
     )
     
     if selected_case_label:
-        selected_case_index = case_options[selected_case_label]
-        selected_case = cases[selected_case_index]
+        # 找到选中的案例在倒序列表中的索引
+        selected_index = case_options.index(selected_case_label)
+        selected_case = cases_reversed[selected_index]
         case_id = selected_case.get("case_id", "")
         
         col_chart, col_image = st.columns([3, 2])
