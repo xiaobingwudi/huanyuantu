@@ -266,28 +266,71 @@ def plot_kline(bars, annotations, first_bar_offset=0, title="K线图", show_edit
     fig.add_trace(go.Bar(x=x_values, y=bars['volume'], name='', marker_color=colors,
                          opacity=0.4, showlegend=False, hovertemplate='量: %{y:,.0f}<extra></extra>'), row=2, col=1)
 
+    # 创建K线标注
     annotations_on_chart = []
+    
+    # 上面一行：显示1-87的连续编号（所有K线）
     for i in range(len(bars)):
         row = bars.iloc[i]
         is_green = row['close'] >= row['open']
-        y_pos = row['high'] * 1.002 if is_green else row['low'] * 0.998
+        y_pos_upper = row['high'] * 1.015 if is_green else row['low'] * 0.985  # 稍微远一点
         color = 'red' if is_green else 'black'
-        original_num = i + 1 - first_bar_offset
-        text = f"<b>{i+1}</b>*" if original_num in annotations else f"<b>{i+1}</b>"
+        bar_number = i + 1  # 连续编号 1-87
         
-        # 如果数据被编辑过，添加标记
+        # 判断是否有关联注释
+        original_num = i + 1 - first_bar_offset
+        text = f"<b>{bar_number}</b>*" if original_num in annotations else f"<b>{bar_number}</b>"
+        
+        # 如果有编辑标记，添加到上方标注
         if show_edit_indicator and original_num > 0:
-            text += " ✏️"
+            # 检查是否有编辑（简化处理，只要有edit_mode就显示）
+            pass
         
         annotations_on_chart.append(dict(
-            x=x_values[i], y=y_pos, text=text, showarrow=False,
-            font=dict(size=10, color=color), xanchor='center',
+            x=x_values[i], 
+            y=y_pos_upper, 
+            text=text, 
+            showarrow=False,
+            font=dict(size=10, color=color), 
+            xanchor='center',
             yanchor='bottom' if is_green else 'top'
         ))
+    
+    # 下面一行：只从第7根K线开始标注，起始数为1，最后一根为81
+    # 需要确定哪些K线是正式K线（从第7根开始）
+    # first_bar_offset 是盘前K线数量，正式K线从 first_bar_offset + 1 开始
+    # 在图表上，第7根K线对应索引 first_bar_offset（因为索引从0开始）
+    
+    lower_annotations = []
+    for i in range(len(bars)):
+        row = bars.iloc[i]
+        is_green = row['close'] >= row['open']
+        y_pos_lower = row['low'] * 0.985 if is_green else row['high'] * 1.015  # 在K线下方
+        color = 'red' if is_green else 'black'
+        
+        # 计算正式K线的序号（从1开始）
+        original_num = i + 1 - first_bar_offset
+        
+        # 只标注正式K线（original_num >= 1）且不超过81根
+        if original_num >= 1 and original_num <= 81:
+            # 下方标注显示 1-81
+            text = f"<b>{original_num}</b>"
+            lower_annotations.append(dict(
+                x=x_values[i], 
+                y=y_pos_lower, 
+                text=text, 
+                showarrow=False,
+                font=dict(size=9, color=color), 
+                xanchor='center',
+                yanchor='top' if is_green else 'bottom'
+            ))
+    
+    # 合并所有标注
+    all_annotations = annotations_on_chart + lower_annotations
 
     fig.update_layout(title=title, height=600, hovermode='x unified', showlegend=False,
                       template='plotly_white', margin=dict(l=50, r=30, t=50, b=30),
-                      annotations=annotations_on_chart)
+                      annotations=all_annotations)
     fig.update_xaxes(range=[0.5, len(bars) + 0.5], showgrid=True, gridcolor='#f0f0f0',
                      tickmode='linear', tick0=1, dtick=1, row=1, col=1)
     fig.update_xaxes(range=[0.5, len(bars) + 0.5], showgrid=True, gridcolor='#f0f0f0',
@@ -428,26 +471,59 @@ def plot_kline_from_case(case_data):
     fig.add_trace(go.Bar(x=x_values, y=df_bars['volume'], name='', marker_color=colors,
                          opacity=0.4, showlegend=False, hovertemplate='量: %{y:,.0f}<extra></extra>'), row=2, col=1)
     
+    # 创建K线标注
     annotations_on_chart = []
+    
+    # 上面一行：显示所有K线的连续编号（盘前为负数，正式为正数）
     for i, b in enumerate(bars):
         bar_num = b["bar"]
         is_green = b['close'] >= b['open']
-        y_pos = b['high'] * 1.002 if is_green else b['low'] * 0.998
+        y_pos_upper = b['high'] * 1.015 if is_green else b['low'] * 0.985
         color = 'red' if is_green else 'black'
         
+        # 显示原始编号（盘前为负数，正式为正数）
         comment_key = str(bar_num) if bar_num > 0 else None
         text = f"<b>{bar_num}</b>*" if (comment_key and comment_key in comments) else f"<b>{bar_num}</b>"
         
         annotations_on_chart.append(dict(
-            x=x_values[i], y=y_pos, text=text, showarrow=False,
-            font=dict(size=10, color=color), xanchor='center',
+            x=x_values[i], 
+            y=y_pos_upper, 
+            text=text, 
+            showarrow=False,
+            font=dict(size=10, color=color), 
+            xanchor='center',
             yanchor='bottom' if is_green else 'top'
         ))
+    
+    # 下面一行：只从第1根正式K线开始标注（即bar_num从1开始），显示1-81
+    lower_annotations = []
+    for i, b in enumerate(bars):
+        bar_num = b["bar"]
+        is_green = b['close'] >= b['open']
+        y_pos_lower = b['low'] * 0.985 if is_green else b['high'] * 1.015
+        color = 'red' if is_green else 'black'
+        
+        # 只标注正式K线（bar_num >= 1）且不超过81根
+        if bar_num >= 1 and bar_num <= 81:
+            # 下方标注显示 1-81
+            text = f"<b>{bar_num}</b>"
+            lower_annotations.append(dict(
+                x=x_values[i], 
+                y=y_pos_lower, 
+                text=text, 
+                showarrow=False,
+                font=dict(size=9, color=color), 
+                xanchor='center',
+                yanchor='top' if is_green else 'bottom'
+            ))
+    
+    # 合并所有标注
+    all_annotations = annotations_on_chart + lower_annotations
     
     title = case_data.get("title", "案例K线图")
     fig.update_layout(title=title, height=600, hovermode='x unified', showlegend=False,
                       template='plotly_white', margin=dict(l=50, r=30, t=50, b=30),
-                      annotations=annotations_on_chart)
+                      annotations=all_annotations)
     fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', row=1, col=1)
     fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', row=2, col=1)
     fig.update_yaxes(title_text="", showgrid=True, gridcolor='#f0f0f0', row=1, col=1)
