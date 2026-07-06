@@ -56,6 +56,13 @@ if 'saved_case_id' not in st.session_state:
     st.session_state.saved_case_id = None
 if 'data_loading_started' not in st.session_state:
     st.session_state.data_loading_started = False
+# 新增：存储编辑后的K线数据
+if 'edited_pre_df' not in st.session_state:
+    st.session_state.edited_pre_df = None
+if 'edited_main_df' not in st.session_state:
+    st.session_state.edited_main_df = None
+if 'edit_mode' not in st.session_state:
+    st.session_state.edit_mode = False
 
 def get_github_headers():
     return {
@@ -218,7 +225,8 @@ def load_html_annotations(file_content, filename):
         st.error(f"解析HTML失败: {e}")
         return {}, filename
 
-def plot_kline(bars, annotations, first_bar_offset=0, title="K线图"):
+def plot_kline(bars, annotations, first_bar_offset=0, title="K线图", show_edit_indicator=False):
+    """绘制K线图，支持显示编辑标记"""
     if bars is None or len(bars) == 0:
         return None
 
@@ -266,6 +274,11 @@ def plot_kline(bars, annotations, first_bar_offset=0, title="K线图"):
         color = 'red' if is_green else 'black'
         original_num = i + 1 - first_bar_offset
         text = f"<b>{i+1}</b>*" if original_num in annotations else f"<b>{i+1}</b>"
+        
+        # 如果数据被编辑过，添加标记
+        if show_edit_indicator and original_num > 0:
+            text += " ✏️"
+        
         annotations_on_chart.append(dict(
             x=x_values[i], y=y_pos, text=text, showarrow=False,
             font=dict(size=10, color=color), xanchor='center',
@@ -299,6 +312,7 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df
     
     bars_data = []
     
+    # 保存盘前K线
     for i in range(pre_count):
         row = df_pre.iloc[i]
         bars_data.append({
@@ -310,6 +324,7 @@ def save_case_to_database(case_id, title, date, start_time, end_time, df_pre, df
             "volume": int(row['volume'])
         })
     
+    # 保存正式K线
     for i in range(main_count):
         row = df_main.iloc[i]
         bars_data.append({
@@ -439,6 +454,126 @@ def plot_kline_from_case(case_data):
     fig.update_yaxes(title_text="", showgrid=False, row=2, col=1)
     return fig
 
+def create_kline_editor(df, prefix, max_bars=81):
+    """创建K线数据编辑器"""
+    if df is None or len(df) == 0:
+        return None
+    
+    # 限制编辑的K线数量
+    df_to_edit = df.head(max_bars)
+    
+    st.subheader(f"📝 编辑K线数据 (最多{max_bars}根)")
+    st.caption("修改开盘价、最高价、最低价、收盘价，点击'更新数据'生效")
+    
+    # 创建编辑表格
+    edited_data = []
+    for i in range(len(df_to_edit)):
+        row = df_to_edit.iloc[i]
+        bar_num = i + 1
+        
+        col1, col2, col3, col4, col5, col6 = st.columns([0.8, 1.2, 1.2, 1.2, 1.2, 0.5])
+        
+        with col1:
+            st.write(f"#{bar_num}")
+        
+        with col2:
+            open_val = st.number_input(
+                f"开_{bar_num}",
+                value=float(row['open']),
+                step=0.25,
+                format="%.2f",
+                key=f"{prefix}_open_{bar_num}",
+                label_visibility="collapsed"
+            )
+        
+        with col3:
+            high_val = st.number_input(
+                f"高_{bar_num}",
+                value=float(row['high']),
+                step=0.25,
+                format="%.2f",
+                key=f"{prefix}_high_{bar_num}",
+                label_visibility="collapsed"
+            )
+        
+        with col4:
+            low_val = st.number_input(
+                f"低_{bar_num}",
+                value=float(row['low']),
+                step=0.25,
+                format="%.2f",
+                key=f"{prefix}_low_{bar_num}",
+                label_visibility="collapsed"
+            )
+        
+        with col5:
+            close_val = st.number_input(
+                f"收_{bar_num}",
+                value=float(row['close']),
+                step=0.25,
+                format="%.2f",
+                key=f"{prefix}_close_{bar_num}",
+                label_visibility="collapsed"
+            )
+        
+        with col6:
+            # 检查是否被修改
+            changed = (open_val != row['open'] or high_val != row['high'] or 
+                      low_val != row['low'] or close_val != row['close'])
+            if changed:
+                st.write("✏️")
+        
+        edited_data.append({
+            'open': open_val,
+            'high': high_val,
+            'low': low_val,
+            'close': close_val,
+            'volume': row['volume'],
+            'original_index': row.name if hasattr(row, 'name') else i
+        })
+    
+    # 应用编辑
+    if st.button("✅ 应用K线数据编辑", key=f"{prefix}_apply_edit", use_container_width=True):
+        # 创建新的DataFrame
+        new_df = df_to_edit.copy()
+        for i, data in enumerate(edited_data):
+            new_df.iloc[i, new_df.columns.get_loc('open')] = data['open']
+            new_df.iloc[i, new_df.columns.get_loc('high')] = data['high']
+            new_df.iloc[i, new_df.columns.get_loc('low')] = data['low']
+            new_df.iloc[i, new_df.columns.get_loc('close')] = data['close']
+        
+        # 检查是否有修改
+        changed = False
+        for i in range(len(new_df)):
+            if (new_df.iloc[i]['open'] != df_to_edit.iloc[i]['open'] or
+                new_df.iloc[i]['high'] != df_to_edit.iloc[i]['high'] or
+                new_df.iloc[i]['low'] != df_to_edit.iloc[i]['low'] or
+                new_df.iloc[i]['close'] != df_to_edit.iloc[i]['close']):
+                changed = True
+                break
+        
+        if changed:
+            st.session_state.edit_mode = True
+            if prefix == "pre":
+                st.session_state.edited_pre_df = new_df
+            else:
+                st.session_state.edited_main_df = new_df
+            st.success(f"✅ K线数据已更新！{'盘前' if prefix == 'pre' else '正式'}K线数据已修改")
+            st.rerun()
+        else:
+            st.info("没有检测到数据变化")
+    
+    # 重置按钮
+    if st.button(f"🔄 重置{'盘前' if prefix == 'pre' else '正式'}K线数据", key=f"{prefix}_reset", use_container_width=True):
+        if prefix == "pre":
+            st.session_state.edited_pre_df = None
+        else:
+            st.session_state.edited_main_df = None
+        st.session_state.edit_mode = False
+        st.rerun()
+    
+    return pd.DataFrame(edited_data)
+
 # ==================== 自动加载数据 ====================
 if not st.session_state.data_loading_started and GITHUB_TOKEN:
     st.session_state.data_loading_started = True
@@ -495,7 +630,7 @@ with col_right:
             st.session_state.html_filename = None
             st.rerun()
 
-# ==================== 对照图显示（在步骤1和步骤2之间） ====================
+# ==================== 对照图显示 ====================
 if st.session_state.html_filename:
     st.divider()
     st.header("🖼️ 对照图片")
@@ -554,6 +689,10 @@ if st.session_state.data_file_loaded:
                 st.session_state.builder_date = builder_date
                 st.session_state.builder_start = builder_start
                 st.session_state.builder_end = builder_end
+                # 重置编辑状态
+                st.session_state.edited_pre_df = None
+                st.session_state.edited_main_df = None
+                st.session_state.edit_mode = False
                 
                 combined = pd.concat([df_pre, df_main])
                 st.session_state.combined_df = combined
@@ -607,16 +746,54 @@ if st.session_state.data_file_loaded:
             st.info(f"正式数据来源: {st.session_state.builder_date} {st.session_state.builder_start}-{st.session_state.builder_end}")
         
         st.divider()
-        st.header("步骤4：预览并保存")
+        st.header("步骤4：预览并编辑数据")
         
-        fig = plot_kline(st.session_state.combined_df, st.session_state.html_annotations,
-                         first_bar_offset=pre_count,
-                         title=f"预览 - {st.session_state.builder_date} (盘前:{pre_count} + 正式:{main_count})")
+        # 决定使用原始数据还是编辑后的数据
+        display_pre_df = st.session_state.edited_pre_df if st.session_state.edited_pre_df is not None else st.session_state.pre_df
+        display_main_df = st.session_state.edited_main_df if st.session_state.edited_main_df is not None else st.session_state.main_df
+        display_combined = pd.concat([display_pre_df, display_main_df])
+        
+        # 显示编辑状态
+        if st.session_state.edit_mode:
+            st.info("✏️ 当前显示的是编辑后的K线数据")
+        
+        # 绘制K线图
+        fig = plot_kline(
+            display_combined, 
+            st.session_state.html_annotations,
+            first_bar_offset=pre_count,
+            title=f"预览 - {st.session_state.builder_date} (盘前:{pre_count} + 正式:{main_count})",
+            show_edit_indicator=st.session_state.edit_mode
+        )
         if fig:
             st.plotly_chart(fig, use_container_width=True)
         
+        # ========== K线数据编辑部分 ==========
+        st.divider()
+        st.header("✏️ 编辑K线数据（可选）")
+        st.warning("⚠️ 如果原始数据与图片不符，可以在此修改每根K线的4个价格（开、高、低、收）")
+        
+        # 选择编辑哪个部分
+        edit_tab1, edit_tab2 = st.tabs(["📊 正式K线数据", "📈 盘前K线数据"])
+        
+        with edit_tab1:
+            if len(st.session_state.main_df) > 0:
+                st.info(f"正式K线数量: {len(st.session_state.main_df)} 根")
+                create_kline_editor(st.session_state.main_df, "main", max_bars=81)
+            else:
+                st.warning("没有正式K线数据")
+        
+        with edit_tab2:
+            if len(st.session_state.pre_df) > 0:
+                st.info(f"盘前K线数量: {len(st.session_state.pre_df)} 根")
+                create_kline_editor(st.session_state.pre_df, "pre", max_bars=20)
+            else:
+                st.warning("没有盘前K线数据")
+        
+        # 注释预览
         if st.session_state.html_annotations:
-            st.subheader("注释映射预览")
+            st.divider()
+            st.subheader("📝 注释预览")
             preview_data = []
             for original_num, desc in sorted(st.session_state.html_annotations.items()):
                 if 1 <= original_num <= main_count:
@@ -625,10 +802,18 @@ if st.session_state.data_file_loaded:
                 st.dataframe(pd.DataFrame(preview_data), use_container_width=True, height=200)
                 st.info(f"{len(preview_data)} 条注释将被保存")
         
+        # 保存部分
         st.divider()
+        st.header("💾 保存案例")
+        
         col_save1, col_save2 = st.columns([2, 1])
         with col_save1:
             case_title = st.text_input("案例标题", value=f"{st.session_state.builder_date}")
+            # 显示当前使用的数据状态
+            if st.session_state.edit_mode:
+                st.caption("✅ 将使用编辑后的K线数据保存")
+            else:
+                st.caption("📊 将使用原始K线数据保存")
         with col_save2:
             st.write("")
             st.write("")
@@ -642,18 +827,24 @@ if st.session_state.data_file_loaded:
                     st.error("请先配置 GITHUB_TOKEN")
                 else:
                     try:
+                        # 使用编辑后的数据保存
+                        save_pre_df = st.session_state.edited_pre_df if st.session_state.edited_pre_df is not None else st.session_state.pre_df
+                        save_main_df = st.session_state.edited_main_df if st.session_state.edited_main_df is not None else st.session_state.main_df
+                        
                         saved_bars, saved_comments, updated = save_case_to_database(
                             case_id=case_id, title=case_title,
                             date=st.session_state.builder_date,
                             start_time=st.session_state.builder_start,
                             end_time=st.session_state.builder_end,
-                            df_pre=st.session_state.pre_df,
-                            df_main=st.session_state.main_df,
+                            df_pre=save_pre_df,
+                            df_main=save_main_df,
                             annotations=st.session_state.html_annotations
                         )
                         st.session_state.saved_case_id = case_id
                         st.balloons()
                         st.success(f"保存成功！{case_id} | K线:{saved_bars} | 注释:{saved_comments}")
+                        if st.session_state.edit_mode:
+                            st.info("📝 保存的是编辑后的K线数据")
                         st.rerun()
                     except Exception as e:
                         st.error(f"保存失败: {e}")
